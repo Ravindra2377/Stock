@@ -80,20 +80,25 @@ class AIService:
         # 6. Trade context
         if trade.get('direction') in ('LONG', 'SHORT'):
             rr = trade.get('risk_reward', 'N/A')
+            rr_ok = trade.get('rr_acceptable', False)
             parts.append(f"Risk:Reward = {rr}.")
+            if not rr_ok:
+                parts.append("⚠️ R:R below 1.5 — not an ideal entry.")
+            if trade.get('pullback_entry'):
+                parts.append(f"Better entry on pullback to {trade['pullback_entry']}.")
+        if trade.get('note'):
+            parts.append(trade['note'])
+
+        # 6b. Trap warning
+        trap = ta.get("trap", {})
+        if trap.get('trap'):
+            parts.insert(0, f"🚨 {trap.get('detail', 'Trap detected')}.")
 
         insight = " ".join(parts)
 
-        # Risk assessment
-        risks = []
-        if breakout.get('status') == "WEAK": risks.append("Possible false breakout")
-        if vol_intel.get('divergence') == "BEARISH": risks.append("Price-volume divergence")
-        if regime_name == "VOLATILE": risks.append("High volatility environment")
-        if rsi > 70: risks.append(f"RSI overbought ({rsi})")
-        if rsi < 30: risks.append(f"RSI oversold ({rsi}) — could be falling knife")
-        if not mtf.get('aligned') and wt != "unknown": risks.append("Weekly trend not aligned")
-
-        risk_text = "; ".join(risks[:3]) + "." if risks else "No critical risks identified."
+        # Risk assessment — use engine's always-on warnings
+        risk_list = ta.get('risk_warnings', [])
+        risk_text = "; ".join(risk_list[:4]) + "." if risk_list else "Standard market risk applies."
 
         # Modifier
         modifier = 0

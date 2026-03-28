@@ -5,17 +5,16 @@ from typing import Dict, Any, List, Tuple
 
 class IndicatorService:
     """
-    Pro Trading Engine v2.0
-    ─────────────────────────
-    Behavior-based prediction system with:
-    - Market Regime Detection (Trending/Sideways/Volatile)
-    - Dynamic Weight Engine (shifts by regime)
-    - Confirmed Breakout Detection (not just price > resistance)
-    - Smart Support/Resistance Zones (cluster-based)
-    - Deep Volume Intelligence + Smart Money Detection
-    - Trade Structure (Entry/Target/Stop Loss with ATR)
-    - Multi-Timeframe Confirmation
-    - Momentum Strength & Signal Quality Tiers
+    Pro Trading Engine v3.0 — ELITE
+    ─────────────────────────────────
+    - Market Regime Detection + Dynamic Weights
+    - Confirmed Breakout + Trap Detection
+    - Smart Money (Compression→Expansion)
+    - RSI Slope + Momentum Acceleration
+    - ATR-based Trade Structure with R:R Filter (≥1.5)
+    - Pullback Entry Suggestions
+    - Always-On Risk Assessment
+    - Signal Quality Tiers tied to R:R
     """
 
     # ─── Regime-Adaptive Weights ──────────────────────────────────
@@ -110,6 +109,14 @@ class IndicatorService:
 
         # ATR Average (for volatility regime)
         df['ATR_Avg'] = df['ATR'].rolling(window=20).mean() if 'ATR' in df.columns else 0
+
+        # RSI slope (direction matters more than value)
+        df['RSI_Prev'] = df['RSI'].shift(1) if 'RSI' in df.columns else 50
+        df['RSI_Slope'] = df['RSI'] - df['RSI_Prev'] if 'RSI' in df.columns else 0
+
+        # ATR compression detection (for smart money)
+        df['ATR_5'] = df['ATR'].rolling(5).mean() if 'ATR' in df.columns else 0
+        df['ATR_Compress'] = (df['ATR_5'] < df['ATR_Avg'] * 0.7) if 'ATR' in df.columns else False
 
         return df
 
@@ -305,13 +312,59 @@ class IndicatorService:
         return {"status": "NONE", "type": None, "detail": "No breakout detected at key levels"}
 
     # ═══════════════════════════════════════════════════════════════
+    #  TRAP DETECTION (Fake Breakout)
+    # ═══════════════════════════════════════════════════════════════
+    @staticmethod
+    def detect_trap(df: pd.DataFrame, sr_zones: Dict) -> Dict[str, Any]:
+        """Detect fake breakouts: price breaks level then returns."""
+        if df.empty or len(df) < 5:
+            return {"trap": False, "detail": ""}
+
+        resistances = sr_zones.get('resistance', [])
+        supports = sr_zones.get('support', [])
+
+        # Check last 3 bars for trap pattern
+        for i in range(-3, -1):
+            try:
+                bar = df.iloc[i]
+                bar_close = float(bar['Close'])
+                bar_high = float(bar.get('High', bar_close))
+                bar_low = float(bar.get('Low', bar_close))
+            except:
+                continue
+
+            current_close = float(df.iloc[-1]['Close'])
+
+            # Bull trap: wick above resistance then close back below
+            for r in resistances:
+                if bar_high > r['price'] and current_close < r['price']:
+                    return {
+                        "trap": True,
+                        "type": "BULL TRAP",
+                        "level": r['price'],
+                        "detail": f"⚠ Bull trap detected: price pierced {r['price']:.2f} but closed back below — likely stop hunt"
+                    }
+
+            # Bear trap: wick below support then close back above
+            for s in supports:
+                if bar_low < s['price'] and current_close > s['price']:
+                    return {
+                        "trap": True,
+                        "type": "BEAR TRAP",
+                        "level": s['price'],
+                        "detail": f"Bear trap detected: price dipped below {s['price']:.2f} but recovered — possible accumulation"
+                    }
+
+        return {"trap": False, "detail": ""}
+
+    # ═══════════════════════════════════════════════════════════════
     #  DEEP VOLUME INTELLIGENCE + SMART MONEY DETECTION
     # ═══════════════════════════════════════════════════════════════
     @staticmethod
     def analyze_volume(df: pd.DataFrame) -> Dict[str, Any]:
-        """Deep volume analysis: spikes, trends, divergence, smart money."""
+        """Deep volume analysis: spikes, trends, divergence, smart money with compression→expansion."""
         if df.empty or len(df) < 10:
-            return {"spike": False, "trend": "flat", "divergence": None, "smart_money": None, "detail": "Not enough data"}
+            return {"spike": False, "ratio": 1.0, "trend": "flat", "divergence": None, "smart_money": None, "detail": "Not enough data"}
 
         last = df.iloc[-1]
         close = float(last['Close'])
@@ -335,24 +388,29 @@ class IndicatorService:
         # Price-Volume Divergence
         divergence = None
         if price_change_5d > 2 and vol_trend == "falling":
-            divergence = "BEARISH"  # Price up on falling volume = weak rally
+            divergence = "BEARISH"
         elif price_change_5d < -2 and vol_trend == "falling":
-            divergence = "BULLISH"  # Price down on falling volume = weak selling
+            divergence = "BULLISH"
 
-        # Smart Money Detection
+        # Smart Money Detection — requires compression→expansion
         smart_money = None
         body = float(last.get('Body_Size', 0))
         avg_body = float(last.get('Avg_Body', body))
         strong_candle = body > avg_body * 1.5 if avg_body > 0 else False
+        prev_high = float(df['High'].iloc[-2]) if 'High' in df.columns else 0
+        prev_low = float(df['Low'].iloc[-2]) if 'Low' in df.columns else close
+        was_compressed = bool(last.get('ATR_Compress', False))
 
-        if spike and strong_candle and price_up:
+        # REAL institutional: compression→expansion + volume spike + strong candle + new high/low
+        if spike and strong_candle and price_up and (close > prev_high or was_compressed):
             smart_money = "INSTITUTIONAL BUYING DETECTED"
-        elif spike and strong_candle and not price_up:
+        elif spike and strong_candle and not price_up and (close < prev_low or was_compressed):
             smart_money = "INSTITUTIONAL SELLING DETECTED"
-        elif spike and price_up:
+        elif spike and strong_candle and price_up:
             smart_money = "Large volume accumulation"
-        elif spike and not price_up:
+        elif spike and strong_candle and not price_up:
             smart_money = "Large volume distribution"
+        # Don't label non-strong candles as institutional — that's noise
 
         # Detail
         parts = []
@@ -380,13 +438,13 @@ class IndicatorService:
         }
 
     # ═══════════════════════════════════════════════════════════════
-    #  MOMENTUM STRENGTH
+    #  MOMENTUM STRENGTH + RSI SLOPE
     # ═══════════════════════════════════════════════════════════════
     @staticmethod
     def calculate_momentum(df: pd.DataFrame) -> Dict[str, Any]:
-        """Calculate momentum acceleration and strength."""
+        """Calculate momentum acceleration, RSI slope, and strength."""
         if df.empty or len(df) < 12:
-            return {"strength": 0, "acceleration": "neutral", "detail": "Insufficient data"}
+            return {"strength": 0, "acceleration": "neutral", "rsi_slope": 0, "detail": "Insufficient data"}
 
         last = df.iloc[-1]
         prev = df.iloc[-2]
@@ -398,9 +456,13 @@ class IndicatorService:
         macd_hist = float(last.get('MACD_Diff', 0))
         prev_macd_hist = float(prev.get('MACD_Diff', 0))
 
+        # RSI slope — direction matters more than value
+        rsi_slope = float(last.get('RSI_Slope', 0))
+
         # Acceleration check
         roc_accelerating = roc_5 > prev_roc_5
         macd_accelerating = abs(macd_hist) > abs(prev_macd_hist) and macd_hist * prev_macd_hist > 0
+        rsi_accelerating = rsi_slope > 2  # RSI rising fast
 
         if roc_accelerating and macd_accelerating:
             if roc_5 > 0:
@@ -412,7 +474,7 @@ class IndicatorService:
         else:
             acceleration = "STEADY"
 
-        # Strength score (0-100)
+        # Strength score (0-100) — now includes RSI slope
         strength = 50
         if roc_5 > 5: strength += 15
         elif roc_5 > 2: strength += 8
@@ -425,19 +487,26 @@ class IndicatorService:
         if roc_10 > 0 and roc_5 > roc_10: strength += 8
         elif roc_10 < 0 and roc_5 < roc_10: strength -= 8
 
+        # RSI slope contribution
+        if rsi_slope > 5: strength += 8
+        elif rsi_slope > 2: strength += 4
+        elif rsi_slope < -5: strength -= 8
+        elif rsi_slope < -2: strength -= 4
+
         strength = max(0, min(100, strength))
 
-        detail = f"Momentum {acceleration.lower()}. ROC(5)={roc_5:.1f}%, ROC(10)={roc_10:.1f}%"
-        return {"strength": strength, "acceleration": acceleration, "detail": detail}
+        rsi_dir = "rising" if rsi_slope > 1 else "falling" if rsi_slope < -1 else "flat"
+        detail = f"Momentum {acceleration.lower()}. ROC(5)={roc_5:.1f}%, RSI {rsi_dir} (slope={rsi_slope:.1f})"
+        return {"strength": strength, "acceleration": acceleration, "rsi_slope": round(rsi_slope, 1), "detail": detail}
 
     # ═══════════════════════════════════════════════════════════════
-    #  TRADE STRUCTURE (Entry/Target/Stop Loss)
+    #  TRADE STRUCTURE (Entry/Target/Stop Loss) + R:R FILTER
     # ═══════════════════════════════════════════════════════════════
     @staticmethod
-    def generate_trade_structure(df: pd.DataFrame, sr_zones: Dict, recommendation: str) -> Dict[str, Any]:
-        """Generate actionable trade with ATR-based stop loss."""
+    def generate_trade_structure(df: pd.DataFrame, sr_zones: Dict, recommendation: str, breakout: Dict = None) -> Dict[str, Any]:
+        """Generate actionable trade with ATR stop loss, correct target ordering, R:R filter, and pullback entry."""
         if df.empty or len(df) < 5:
-            return {}
+            return {"direction": "WAIT", "rr_value": 0}
 
         last = df.iloc[-1]
         close = float(last['Close'])
@@ -449,11 +518,27 @@ class IndicatorService:
         if recommendation in ("STRONG BUY", "BUY"):
             entry = close
             stop_loss = max(close - 1.5 * atr, supports[0]['price'] if supports else close * 0.95)
-            target_1 = resistances[0]['price'] if resistances else close + 2 * atr
-            target_2 = resistances[1]['price'] if len(resistances) > 1 else close + 3 * atr
+
+            # Targets: T1 = nearest resistance, T2 = farther — ALWAYS T2 > T1 for LONG
+            raw_targets = []
+            for r in resistances:
+                if r['price'] > close:
+                    raw_targets.append(r['price'])
+            if not raw_targets:
+                raw_targets = [close + 2 * atr, close + 3 * atr]
+            elif len(raw_targets) < 2:
+                raw_targets.append(raw_targets[-1] + atr)
+            raw_targets.sort()  # ascending for LONG
+            target_1, target_2 = raw_targets[0], raw_targets[1]
+
             risk = entry - stop_loss
             reward = target_1 - entry
             rr = round(reward / risk, 1) if risk > 0 else 0
+
+            # Pullback entry suggestion
+            pullback_entry = None
+            if breakout and breakout.get('status') == 'CONFIRMED' and breakout.get('level'):
+                pullback_entry = round(breakout['level'], 2)  # retest the breakout level
 
             return {
                 "direction": "LONG",
@@ -461,16 +546,34 @@ class IndicatorService:
                 "stop_loss": round(stop_loss, 2),
                 "targets": [round(target_1, 2), round(target_2, 2)],
                 "risk_reward": f"1:{rr}",
+                "rr_value": rr,
                 "atr": round(atr, 2),
+                "pullback_entry": pullback_entry,
+                "rr_acceptable": rr >= 1.5,
             }
         elif recommendation in ("STRONG SELL", "SELL"):
             entry = close
             stop_loss = min(close + 1.5 * atr, resistances[0]['price'] if resistances else close * 1.05)
-            target_1 = supports[0]['price'] if supports else close - 2 * atr
-            target_2 = supports[1]['price'] if len(supports) > 1 else close - 3 * atr
+
+            # Targets: T1 = nearest support, T2 = farther — ALWAYS T2 < T1 for SHORT
+            raw_targets = []
+            for s in supports:
+                if s['price'] < close:
+                    raw_targets.append(s['price'])
+            if not raw_targets:
+                raw_targets = [close - 2 * atr, close - 3 * atr]
+            elif len(raw_targets) < 2:
+                raw_targets.append(raw_targets[-1] - atr)
+            raw_targets.sort(reverse=True)  # descending for SHORT (nearest first)
+            target_1, target_2 = raw_targets[0], raw_targets[1]
+
             risk = stop_loss - entry
             reward = entry - target_1
             rr = round(reward / risk, 1) if risk > 0 else 0
+
+            pullback_entry = None
+            if breakout and breakout.get('status') == 'CONFIRMED' and breakout.get('level'):
+                pullback_entry = round(breakout['level'], 2)
 
             return {
                 "direction": "SHORT",
@@ -478,7 +581,10 @@ class IndicatorService:
                 "stop_loss": round(stop_loss, 2),
                 "targets": [round(target_1, 2), round(target_2, 2)],
                 "risk_reward": f"1:{rr}",
+                "rr_value": rr,
                 "atr": round(atr, 2),
+                "pullback_entry": pullback_entry,
+                "rr_acceptable": rr >= 1.5,
             }
         else:
             return {
@@ -487,7 +593,9 @@ class IndicatorService:
                 "stop_loss": None,
                 "targets": [],
                 "risk_reward": "N/A",
+                "rr_value": 0,
                 "atr": round(atr, 2),
+                "rr_acceptable": False,
                 "note": "No clear trade setup — wait for confirmation"
             }
 
@@ -645,15 +753,17 @@ class IndicatorService:
             return {"weekly_trend": "MIXED", "aligned": False, "boost": 0}
 
     # ═══════════════════════════════════════════════════════════════
-    #  SIGNAL QUALITY TIER
+    #  SIGNAL QUALITY TIER (tied to R:R)
     # ═══════════════════════════════════════════════════════════════
     @staticmethod
-    def get_signal_quality(score, breakout, volume_data, regime, mtf):
-        """Rate the setup quality: A+, A, B, C."""
+    def get_signal_quality(score, breakout, volume_data, regime, mtf, trade):
+        """Rate setup quality: A+/A/B/C/D — incorporates R:R."""
         confirmed_breakout = breakout.get('status') == "CONFIRMED"
-        smart_money = volume_data.get('smart_money') is not None
+        smart_money = volume_data.get('smart_money') is not None and 'INSTITUTIONAL' in (volume_data.get('smart_money') or '')
         aligned = mtf.get('aligned', False)
         strong_regime = regime.get('strength') in ('strong', 'extreme')
+        rr_good = trade.get('rr_value', 0) >= 1.5
+        rr_great = trade.get('rr_value', 0) >= 2.5
 
         quality_points = 0
         if score >= 75: quality_points += 3
@@ -664,10 +774,16 @@ class IndicatorService:
         if smart_money: quality_points += 2
         if aligned: quality_points += 2
         if strong_regime: quality_points += 1
+        if rr_great: quality_points += 2
+        elif rr_good: quality_points += 1
 
-        if quality_points >= 8:
+        # Cap: never A+ or A if R:R is bad
+        if not rr_good and quality_points >= 6:
+            quality_points = 5  # downgrade
+
+        if quality_points >= 9:
             return {"tier": "A+", "label": "ELITE SETUP", "color": "#FFD700"}
-        elif quality_points >= 6:
+        elif quality_points >= 7:
             return {"tier": "A", "label": "STRONG SETUP", "color": "#3DDC84"}
         elif quality_points >= 4:
             return {"tier": "B", "label": "GOOD SETUP", "color": "#4F8EF7"}
@@ -686,8 +802,9 @@ class IndicatorService:
             "recommendation": "HOLD", "signals": [], "rsi": 0, "last_price": 0,
             "composite_score": 50, "breakdown": {}, "price_change_pct": 0,
             "regime": {"regime": "SIDEWAYS", "strength": "weak", "detail": ""},
-            "breakout": {"status": "NONE"}, "volume_intel": {}, "momentum": {},
-            "sr_zones": {}, "trade": {}, "mtf": {}, "signal_quality": {"tier": "C"},
+            "breakout": {"status": "NONE"}, "trap": {"trap": False}, "volume_intel": {},
+            "momentum": {}, "sr_zones": {}, "trade": {"direction": "WAIT", "rr_value": 0},
+            "mtf": {}, "signal_quality": {"tier": "C"}, "risk_warnings": [],
         }
         if df.empty or 'RSI' not in df.columns or len(df) < 5:
             return empty_result
@@ -707,10 +824,13 @@ class IndicatorService:
         # 3. Detect breakout
         breakout = cls.detect_breakout(df, sr_zones)
 
+        # 3b. Detect traps (fake breakouts)
+        trap = cls.detect_trap(df, sr_zones)
+
         # 4. Volume intelligence
         vol_intel = cls.analyze_volume(df)
 
-        # 5. Momentum
+        # 5. Momentum + RSI slope
         momentum = cls.calculate_momentum(df)
 
         # 6. Multi-timeframe
@@ -736,6 +856,11 @@ class IndicatorService:
 
         # Apply MTF boost/penalty
         composite += mtf.get('boost', 0)
+
+        # Trap penalty: downgrade score if fake breakout detected
+        if trap.get('trap'):
+            composite -= 10
+
         composite = max(0, min(100, round(composite, 1)))
 
         # 9. Human-readable signals
@@ -749,22 +874,64 @@ class IndicatorService:
         if scores['sma_cross'] >= 85: signals.append("Golden Cross (SMA 20/50)")
         elif scores['sma_cross'] <= 15: signals.append("Death Cross (SMA 20/50)")
         if breakout['status'] in ('CONFIRMED', 'ATTEMPT'): signals.append(f"Breakout {breakout['status']}: {breakout.get('type', '')}")
+        if trap.get('trap'): signals.append(f"{trap.get('type', 'TRAP')}: {trap.get('detail', '')}")
         if vol_intel.get('smart_money'): signals.append(vol_intel['smart_money'])
         if momentum.get('acceleration', '').startswith('ACCEL'): signals.append(f"Momentum {momentum['acceleration']}")
+        rsi_slope = momentum.get('rsi_slope', 0)
+        if abs(rsi_slope) > 3: signals.append(f"RSI {'surging' if rsi_slope > 0 else 'collapsing'} (slope={rsi_slope})")
         if not signals: signals.append("No strong directional signals")
 
-        # 10. Recommendation
+        # 10. Recommendation (initial)
         if composite >= 80: recommendation = "STRONG BUY"
         elif composite >= 65: recommendation = "BUY"
         elif composite >= 45: recommendation = "HOLD"
         elif composite >= 30: recommendation = "SELL"
         else: recommendation = "STRONG SELL"
 
-        # 11. Trade structure
-        trade = cls.generate_trade_structure(df, sr_zones, recommendation)
+        # 11. Trade structure (pass breakout for pullback entry)
+        trade = cls.generate_trade_structure(df, sr_zones, recommendation, breakout)
 
-        # 12. Signal quality
-        signal_quality = cls.get_signal_quality(composite, breakout, vol_intel, regime, mtf)
+        # 11b. R:R FILTER — downgrade if risk:reward is bad
+        rr_val = trade.get('rr_value', 0)
+        if recommendation in ('BUY', 'STRONG BUY') and rr_val < 1.5 and trade.get('direction') == 'LONG':
+            recommendation = 'HOLD'
+            trade['note'] = f'Signal was BUY but R:R ({rr_val}) < 1.5 — wait for better entry'
+        elif recommendation in ('SELL', 'STRONG SELL') and rr_val < 1.5 and trade.get('direction') == 'SHORT':
+            recommendation = 'HOLD'
+            trade['note'] = f'Signal was SELL but R:R ({rr_val}) < 1.5 — wait for better entry'
+
+        # 12. Signal quality (now includes R:R)
+        signal_quality = cls.get_signal_quality(composite, breakout, vol_intel, regime, mtf, trade)
+
+        # 13. ALWAYS-ON RISK WARNINGS — there is ALWAYS risk
+        risk_warnings = []
+        if rr_val < 1.5 and trade.get('direction') != 'WAIT':
+            risk_warnings.append(f"Low R:R ({rr_val}) — not an ideal entry point")
+        if trap.get('trap'):
+            risk_warnings.append(trap['detail'])
+        if vol_intel.get('divergence') == 'BEARISH':
+            risk_warnings.append("Price-volume divergence — rally may not sustain")
+        rsi_v = float(last.get('RSI', 50))
+        if rsi_v > 70:
+            risk_warnings.append(f"RSI overbought ({rsi_v:.0f}) — pullback risk")
+        elif rsi_v < 30:
+            risk_warnings.append(f"RSI oversold ({rsi_v:.0f}) — could be falling knife")
+        if momentum.get('acceleration') == 'DECELERATING':
+            risk_warnings.append("Momentum decelerating — move losing steam")
+        if not mtf.get('aligned') and mtf.get('weekly_trend') != 'unknown':
+            risk_warnings.append("Weekly trend not aligned — reduces conviction")
+        if regime_name == 'VOLATILE':
+            risk_warnings.append("High volatility environment — wider stops needed")
+        if regime_name == 'SIDEWAYS':
+            risk_warnings.append("Range-bound market — breakout strategies underperform")
+        roc_5 = float(last.get('ROC_5', 0))
+        if abs(roc_5) > 7:
+            risk_warnings.append(f"Overextended move (ROC={roc_5:.1f}%) — possible pullback")
+        if vol_intel.get('trend') == 'falling':
+            risk_warnings.append("Volume declining — conviction fading")
+        # Always have at least one warning
+        if not risk_warnings:
+            risk_warnings.append("Standard market risk applies — always use stop loss")
 
         return {
             "recommendation": recommendation,
@@ -776,10 +943,12 @@ class IndicatorService:
             "price_change_pct": round(float(price_change_pct), 2),
             "regime": regime,
             "breakout": breakout,
+            "trap": trap,
             "volume_intel": vol_intel,
             "momentum": momentum,
             "sr_zones": sr_zones,
             "trade": trade,
             "mtf": mtf,
             "signal_quality": signal_quality,
+            "risk_warnings": risk_warnings,
         }

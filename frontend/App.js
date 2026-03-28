@@ -254,11 +254,30 @@ const DetailSheet = ({ stock, onClose }) => {
             </View>
           )}
 
-          {/* Risk */}
-          {stock.key_risk && (
+          {/* Risk Warnings (always-on) */}
+          {(stock.risk_warnings?.length > 0 || stock.key_risk) && (
             <View style={[sheet.insightBox, { borderColor: 'rgba(255,107,107,0.2)' }]}>
-              <Text style={[txt.label, { color: C.sell }]}>⚠ KEY RISK</Text>
-              <Text style={[sheet.insightText, { color: '#B8505E' }]}>{stock.key_risk}</Text>
+              <Text style={[txt.label, { color: C.sell }]}>⚠ RISK ASSESSMENT</Text>
+              {stock.risk_warnings?.map((w, i) => (
+                <Text key={i} style={[sheet.insightText, { color: '#B8505E', marginTop: 3 }]}>• {w}</Text>
+              ))}
+              {stock.key_risk && !stock.risk_warnings?.length && (
+                <Text style={[sheet.insightText, { color: '#B8505E' }]}>{stock.key_risk}</Text>
+              )}
+            </View>
+          )}
+
+          {/* R:R Rejection Note */}
+          {trade.note && (
+            <View style={{ backgroundColor: '#2A1A00', borderRadius: 8, padding: 10, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: C.warn }}>
+              <Text style={{ color: C.warn, fontSize: 11, fontWeight: '600' }}>💡 {trade.note}</Text>
+            </View>
+          )}
+
+          {/* Trap Alert */}
+          {stock.trap?.trap && (
+            <View style={{ backgroundColor: '#2A0A0A', borderRadius: 8, padding: 10, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: C.sell }}>
+              <Text style={{ color: C.sell, fontSize: 11, fontWeight: '700' }}>🚨 {stock.trap.type}: {stock.trap.detail}</Text>
             </View>
           )}
 
@@ -325,11 +344,13 @@ export default function App() {
         // Pro engine fields
         regime: ta.regime || {},
         breakout: ta.breakout || {},
+        trap: ta.trap || {},
         volume_intel: ta.volume_intel || {},
         momentum: ta.momentum || {},
         trade: ta.trade || {},
         mtf: ta.mtf || {},
         signal_quality: ta.signal_quality || {},
+        risk_warnings: ta.risk_warnings || [],
       });
     } catch {
       setError('Ticker not found');
