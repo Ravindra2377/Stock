@@ -28,3 +28,10 @@ class StockService:
         """Fetch company metadata."""
         stock = yf.Ticker(ticker)
         return stock.info
+
+    @staticmethod
+    def get_weekly_data(ticker: str, period: str = "2y") -> pd.DataFrame:
+        """Fetch weekly timeframe data for multi-timeframe analysis."""
+        stock = yf.Ticker(ticker)
+        df = stock.history(period=period, interval="1wk")
+        return df

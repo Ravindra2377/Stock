@@ -46,27 +46,43 @@ const RSIIndicator = ({ rsi }) => {
   );
 };
 
-// ─── Stock Row Card ────────────────────────────────────────────────
+// ─── Stock Row Card ────────────────────────────────────────────
+const regimeColors = { TRENDING: '#4F8EF7', SIDEWAYS: '#F0A500', VOLATILE: '#FF6B6B' };
+const tierColors = { 'A+': '#FFD700', 'A': '#3DDC84', 'B': '#4F8EF7', 'C': '#F0A500', 'D': '#FF6B6B' };
+
 const StockRow = ({ item, onPress }) => {
   const t = tag(item.recommendation);
   const score = item.composite_score || 50;
   const scoreColor = score >= 65 ? C.buy : score >= 45 ? C.warn : C.sell;
   const changePct = item.price_change_pct || 0;
+  const regime = item.regime || 'SIDEWAYS';
+  const tier = item.signal_tier || 'C';
   return (
     <TouchableOpacity onPress={() => onPress(item)} style={card.row} activeOpacity={0.7}>
-      <View style={[card.accentBar, { backgroundColor: t.color }]} />
+      <View style={[card.accentBar, { backgroundColor: tierColors[tier] || t.color }]} />
       <View style={card.rowContent}>
         <View style={card.rowLeft}>
-          <Text style={txt.ticker}>{item.ticker}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={txt.ticker}>{item.ticker}</Text>
+            <View style={{ backgroundColor: regimeColors[regime] + '22', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+              <Text style={{ color: regimeColors[regime], fontSize: 8, fontWeight: '700' }}>{regime}</Text>
+            </View>
+          </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 3 }}>
             <Text style={txt.price}>${item.price?.toLocaleString()}</Text>
             <Text style={{ color: changePct >= 0 ? C.buy : C.sell, fontSize: 11, fontWeight: '600' }}>
               {changePct >= 0 ? '▲' : '▼'} {Math.abs(changePct).toFixed(2)}%
             </Text>
           </View>
+          {item.smart_money && (
+            <Text style={{ color: '#FFD700', fontSize: 9, fontWeight: '700', marginTop: 2 }}>🧠 {item.smart_money}</Text>
+          )}
         </View>
         <View style={card.rowRight}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View style={{ backgroundColor: tierColors[tier] + '25', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 }}>
+              <Text style={{ color: tierColors[tier], fontSize: 9, fontWeight: '800' }}>{tier}</Text>
+            </View>
             <Text style={[txt.mono, { color: scoreColor, fontSize: 14, fontWeight: '800' }]}>{score}</Text>
             <View style={[card.badge, { backgroundColor: t.bg }]}>
               <Text style={[txt.badge, { color: t.color }]}>{item.recommendation}</Text>
@@ -99,7 +115,15 @@ const DetailSheet = ({ stock, onClose }) => {
   const t = tag(stock.recommendation);
   const prob = parseFloat(stock.probability) || 50;
   const bd = stock.breakdown || {};
-  const labels = { rsi: 'RSI', macd: 'MACD', sma_cross: 'SMA 20/50', ema_cross: 'EMA 12/26', bollinger: 'Bollinger', volume: 'Volume', adx: 'ADX', stochastic: 'Stochastic', trend_200: 'SMA 200' };
+  const labels = { rsi: 'RSI', macd: 'MACD', sma_cross: 'SMA 20/50', ema_cross: 'EMA 12/26', bollinger: 'Bollinger', volume: 'Volume', stochastic: 'Stochastic', breakout: 'Breakout', trend_200: 'SMA 200' };
+  const trade = stock.trade || {};
+  const regime = stock.regime || {};
+  const breakout = stock.breakout || {};
+  const quality = stock.signal_quality || {};
+  const momentum = stock.momentum || {};
+
+  const boColor = breakout.status === 'CONFIRMED' ? C.buy : breakout.status === 'ATTEMPT' ? C.warn : breakout.status === 'WEAK' ? C.sell : C.muted;
+  const boIcon = breakout.status === 'CONFIRMED' ? '✅' : breakout.status === 'ATTEMPT' ? '⚠️' : breakout.status === 'WEAK' ? '❌' : '';
 
   return (
     <TouchableOpacity style={sheet.overlay} onPress={onClose} activeOpacity={1}>
@@ -107,10 +131,17 @@ const DetailSheet = ({ stock, onClose }) => {
         <TouchableOpacity style={sheet.panel} activeOpacity={1} onPress={() => {}}>
           <View style={sheet.drag} />
 
-          {/* Title */}
+          {/* Title + Quality Tier */}
           <View style={sheet.titleRow}>
             <View>
-              <Text style={txt.sheetTicker}>{stock.ticker}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={txt.sheetTicker}>{stock.ticker}</Text>
+                {quality.tier && (
+                  <View style={{ backgroundColor: (tierColors[quality.tier] || C.muted) + '30', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 }}>
+                    <Text style={{ color: tierColors[quality.tier] || C.muted, fontSize: 11, fontWeight: '800' }}>⭐ {quality.tier} {quality.label || ''}</Text>
+                  </View>
+                )}
+              </View>
               <Text style={[txt.sheetPrice, { color: t.color }]}>${stock.price?.toLocaleString()}</Text>
             </View>
             <View style={{ alignItems: 'flex-end' }}>
@@ -119,6 +150,25 @@ const DetailSheet = ({ stock, onClose }) => {
               </View>
               <Text style={{ color: C.muted, fontSize: 10, marginTop: 4 }}>Score: {stock.final_score || stock.composite_score || '—'}/100</Text>
             </View>
+          </View>
+
+          {/* Regime + Breakout + Momentum Row */}
+          <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+            {regime.regime && (
+              <View style={{ backgroundColor: (regimeColors[regime.regime] || C.muted) + '22', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                <Text style={{ color: regimeColors[regime.regime] || C.muted, fontSize: 10, fontWeight: '700' }}>{regime.regime} {regime.strength || ''}</Text>
+              </View>
+            )}
+            {breakout.status && breakout.status !== 'NONE' && (
+              <View style={{ backgroundColor: boColor + '22', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                <Text style={{ color: boColor, fontSize: 10, fontWeight: '700' }}>{boIcon} BREAKOUT {breakout.status}</Text>
+              </View>
+            )}
+            {momentum.acceleration && momentum.acceleration !== 'STEADY' && (
+              <View style={{ backgroundColor: C.accent + '22', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                <Text style={{ color: C.accent, fontSize: 10, fontWeight: '700' }}>⚡ {momentum.acceleration}</Text>
+              </View>
+            )}
           </View>
 
           {/* Metrics Row */}
@@ -139,9 +189,35 @@ const DetailSheet = ({ stock, onClose }) => {
             </View>
           </View>
 
+          {/* Trade Structure */}
+          {trade.direction && trade.direction !== 'WAIT' && (
+            <View style={{ backgroundColor: '#0D1117', borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: trade.direction === 'LONG' ? C.buy + '30' : C.sell + '30' }}>
+              <Text style={[txt.label, { marginBottom: 8, color: trade.direction === 'LONG' ? C.buy : C.sell }]}>🎯 TRADE STRUCTURE ({trade.direction})</Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <View style={{ alignItems: 'center', flex: 1 }}>
+                  <Text style={{ color: C.muted, fontSize: 9, fontWeight: '600' }}>ENTRY</Text>
+                  <Text style={{ color: C.text, fontSize: 14, fontWeight: '700' }}>{trade.entry}</Text>
+                </View>
+                <View style={{ alignItems: 'center', flex: 1 }}>
+                  <Text style={{ color: C.muted, fontSize: 9, fontWeight: '600' }}>TARGET 1</Text>
+                  <Text style={{ color: C.buy, fontSize: 14, fontWeight: '700' }}>{trade.targets?.[0]}</Text>
+                </View>
+                <View style={{ alignItems: 'center', flex: 1 }}>
+                  <Text style={{ color: C.muted, fontSize: 9, fontWeight: '600' }}>TARGET 2</Text>
+                  <Text style={{ color: C.buy, fontSize: 14, fontWeight: '700' }}>{trade.targets?.[1]}</Text>
+                </View>
+                <View style={{ alignItems: 'center', flex: 1 }}>
+                  <Text style={{ color: C.muted, fontSize: 9, fontWeight: '600' }}>STOP LOSS</Text>
+                  <Text style={{ color: C.sell, fontSize: 14, fontWeight: '700' }}>{trade.stop_loss}</Text>
+                </View>
+              </View>
+              <Text style={{ color: C.subtext, fontSize: 10, marginTop: 6, textAlign: 'center' }}>Risk:Reward = {trade.risk_reward} | ATR = {trade.atr}</Text>
+            </View>
+          )}
+
           {/* Signal Strength */}
           {(stock.bullish_count != null) && (
-            <View style={{ marginBottom: 16 }}>
+            <View style={{ marginBottom: 12 }}>
               <Text style={[txt.label, { marginBottom: 8 }]}>SIGNAL STRENGTH</Text>
               <View style={{ flexDirection: 'row', gap: 8 }}>
                 <View style={{ flex: 1, backgroundColor: C.buyFaded, borderRadius: 8, padding: 10, alignItems: 'center' }}>
@@ -227,24 +303,33 @@ export default function App() {
   const fetchDetail = async (ticker) => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API_URL}/stock/${ticker}`, { timeout: 30000 });
+      const res = await axios.get(`${API_URL}/stock/${ticker}`, { timeout: 60000 });
       const d = res.data;
+      const ta = d.ta_summary;
+      const ai = d.ai_prediction;
       setSelected({
         ticker: d.ticker,
-        price: d.ta_summary.last_price,
-        rsi: d.ta_summary.rsi,
-        recommendation: d.ai_prediction.prediction || d.ta_summary.recommendation,
-        composite_score: d.ta_summary.composite_score,
-        final_score: d.ai_prediction.final_score,
-        probability: d.ai_prediction.probability,
-        ai_insight: d.ai_prediction.ai_insight,
-        ai_sentiment: d.ai_prediction.ai_sentiment,
-        key_risk: d.ai_prediction.key_risk,
-        geopolitical_risk: d.ai_prediction.geopolitical_risk,
-        bullish_count: d.ai_prediction.bullish_count,
-        bearish_count: d.ai_prediction.bearish_count,
-        neutral_count: 9 - (d.ai_prediction.bullish_count || 0) - (d.ai_prediction.bearish_count || 0),
-        breakdown: d.ai_prediction.breakdown || d.ta_summary.breakdown || {},
+        price: ta.last_price,
+        rsi: ta.rsi,
+        recommendation: ai.prediction || ta.recommendation,
+        composite_score: ta.composite_score,
+        final_score: ai.final_score,
+        probability: ai.probability,
+        ai_insight: ai.ai_insight,
+        ai_sentiment: ai.ai_sentiment,
+        key_risk: ai.key_risk,
+        bullish_count: ai.bullish_count,
+        bearish_count: ai.bearish_count,
+        neutral_count: (Object.keys(ta.breakdown || {}).length) - (ai.bullish_count || 0) - (ai.bearish_count || 0),
+        breakdown: ai.breakdown || ta.breakdown || {},
+        // Pro engine fields
+        regime: ta.regime || {},
+        breakout: ta.breakout || {},
+        volume_intel: ta.volume_intel || {},
+        momentum: ta.momentum || {},
+        trade: ta.trade || {},
+        mtf: ta.mtf || {},
+        signal_quality: ta.signal_quality || {},
       });
     } catch {
       setError('Ticker not found');

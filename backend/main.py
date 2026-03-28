@@ -86,8 +86,14 @@ async def get_stock_prediction(ticker: str):
         if df.empty:
             raise HTTPException(status_code=404, detail="Stock not found or no data")
 
+        # Fetch weekly data for multi-timeframe
+        try:
+            weekly_df = StockService.get_weekly_data(ticker)
+        except:
+            weekly_df = None
+
         df_with_indicators = IndicatorService.calculate_indicators(df)
-        ta_summary = IndicatorService.generate_signals(df_with_indicators)
+        ta_summary = IndicatorService.generate_signals(df_with_indicators, weekly_df)
         prediction = await ai_service.predict_stock_outcome(ticker, ta_summary)
         
         return {
@@ -95,6 +101,8 @@ async def get_stock_prediction(ticker: str):
             "ta_summary": ta_summary,
             "ai_prediction": prediction
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -108,6 +116,11 @@ async def scan_global_markets():
             if not df.empty:
                 df_with_ind = IndicatorService.calculate_indicators(df)
                 ta_summary = IndicatorService.generate_signals(df_with_ind)
+                regime = ta_summary.get('regime', {})
+                breakout = ta_summary.get('breakout', {})
+                quality = ta_summary.get('signal_quality', {})
+                momentum = ta_summary.get('momentum', {})
+                vol = ta_summary.get('volume_intel', {})
                 return {
                     "ticker": ticker,
                     "recommendation": ta_summary.get('recommendation', 'HOLD'),
@@ -116,6 +129,12 @@ async def scan_global_markets():
                     "price": ta_summary.get('last_price', 0),
                     "price_change_pct": ta_summary.get('price_change_pct', 0),
                     "signals": ta_summary.get('signals', []),
+                    "regime": regime.get('regime', 'SIDEWAYS'),
+                    "breakout_status": breakout.get('status', 'NONE'),
+                    "signal_tier": quality.get('tier', 'C'),
+                    "signal_label": quality.get('label', ''),
+                    "momentum_accel": momentum.get('acceleration', 'STEADY'),
+                    "smart_money": vol.get('smart_money'),
                 }
         except:
             pass
@@ -125,7 +144,6 @@ async def scan_global_markets():
     results = await asyncio.gather(*tasks)
 
     valid = [r for r in results if r]
-    # Sort by composite score descending (best opportunities first)
     valid.sort(key=lambda x: x.get('composite_score', 50), reverse=True)
     return valid
 

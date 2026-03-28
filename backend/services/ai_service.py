@@ -1,179 +1,140 @@
 import os
 import json
 import google.generativeai as genai
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from services.news_service import NewsService
 
 class AIService:
     """
-    AI Prediction Layer with Smart Technical Fallback.
-    When Gemini is unavailable, generates rich analysis from indicators alone.
+    AI Prediction Layer v2.0 — Pro Trading Engine Integration.
+    Smart technical fallback + optional Gemini enhancement.
     """
 
     def __init__(self, gemini_key: Optional[str] = None, news_key: Optional[str] = None):
         self.gemini_key = gemini_key or os.getenv("GEMINI_API_KEY")
         self.news_service = NewsService(news_key)
-
         if self.gemini_key:
             genai.configure(api_key=self.gemini_key)
             self.model = genai.GenerativeModel('models/gemini-2.0-flash')
         else:
             self.model = None
 
-    # ─── Smart Fallback: Generate insight from technical data alone ──
     @staticmethod
     def _generate_technical_insight(ticker: str, ta: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate rich, actionable analysis from technical indicators alone."""
+        """Generate rich, context-aware analysis from the pro engine data."""
         breakdown = ta.get("breakdown", {})
         composite = ta.get("composite_score", 50)
         rsi = ta.get("rsi", 50)
-        signals = ta.get("signals", [])
-        price_change = ta.get("price_change_pct", 0)
+        regime = ta.get("regime", {})
+        breakout = ta.get("breakout", {})
+        vol_intel = ta.get("volume_intel", {})
+        momentum = ta.get("momentum", {})
+        trade = ta.get("trade", {})
+        mtf = ta.get("mtf", {})
+        quality = ta.get("signal_quality", {})
 
-        # Count bullish vs bearish indicators
+        # Count indicators
         bullish = [k for k, v in breakdown.items() if v >= 60]
         bearish = [k for k, v in breakdown.items() if v <= 40]
-        neutral = [k for k, v in breakdown.items() if 40 < v < 60]
 
-        # RSI Analysis
-        if rsi < 25:
-            rsi_analysis = f"RSI at {rsi} indicates extreme oversold conditions — a bounce is likely."
-        elif rsi < 35:
-            rsi_analysis = f"RSI at {rsi} is in oversold territory — watch for a reversal."
-        elif rsi > 75:
-            rsi_analysis = f"RSI at {rsi} signals extreme overbought — correction risk is high."
-        elif rsi > 65:
-            rsi_analysis = f"RSI at {rsi} is entering overbought zone — momentum may be fading."
-        else:
-            rsi_analysis = f"RSI at {rsi} is in neutral range — no extreme momentum signal."
+        parts = []
 
-        # Trend Analysis
-        sma_score = breakdown.get("sma_cross", 50)
-        ema_score = breakdown.get("ema_cross", 50)
-        trend_200 = breakdown.get("trend_200", 50)
+        # 1. Regime context
+        regime_name = regime.get('regime', 'SIDEWAYS')
+        parts.append(f"Market is {regime_name} ({regime.get('detail', '')}).")
 
-        if sma_score >= 65 and trend_200 >= 58:
-            trend_analysis = "The stock is in a confirmed uptrend (above SMA 20, 50, and 200)."
-        elif sma_score <= 35 and trend_200 <= 42:
-            trend_analysis = "The stock is in a confirmed downtrend (below key moving averages)."
-        elif sma_score >= 60:
-            trend_analysis = "Short-term trend is bullish, but long-term direction is unclear."
-        elif sma_score <= 40:
-            trend_analysis = "Short-term trend is bearish, though the long-term trend may hold support."
-        else:
-            trend_analysis = "The stock is range-bound with no clear directional trend."
+        # 2. Breakout status
+        bo_status = breakout.get('status', 'NONE')
+        if bo_status == "CONFIRMED":
+            parts.append(f"🔥 {breakout.get('detail', 'Confirmed breakout detected')}.")
+        elif bo_status == "ATTEMPT":
+            parts.append(f"⚠️ {breakout.get('detail', 'Breakout attempt')}.")
+        elif bo_status == "WEAK":
+            parts.append(f"❌ {breakout.get('detail', 'Weak breakout — possible fake-out')}.")
 
-        # Momentum Analysis
-        macd_score = breakdown.get("macd", 50)
-        stoch_score = breakdown.get("stochastic", 50)
+        # 3. Volume intelligence
+        smart = vol_intel.get('smart_money')
+        if smart:
+            parts.append(f"🧠 {smart}.")
+        if vol_intel.get('divergence') == "BEARISH":
+            parts.append("⚠️ Price-volume divergence: rally on declining volume — caution.")
+        elif vol_intel.get('divergence') == "BULLISH":
+            parts.append("Selling pressure fading — volume declining on pullback.")
 
-        if macd_score >= 75 and stoch_score >= 70:
-            momentum = "Strong bullish momentum: both MACD and Stochastic confirm upward pressure."
-        elif macd_score <= 25 and stoch_score <= 30:
-            momentum = "Strong bearish momentum: MACD and Stochastic both signal downside."
-        elif macd_score >= 60:
-            momentum = "MACD is bullish — positive momentum building."
-        elif macd_score <= 40:
-            momentum = "MACD is bearish — selling pressure remains."
-        else:
-            momentum = "Momentum is neutral with no strong directional bias."
+        # 4. Momentum
+        accel = momentum.get('acceleration', 'STEADY')
+        if 'ACCELERATING UP' in accel:
+            parts.append("Momentum accelerating upward — strength building.")
+        elif 'ACCELERATING DOWN' in accel:
+            parts.append("Momentum accelerating to the downside.")
+        elif accel == 'DECELERATING':
+            parts.append("Momentum decelerating — move losing power.")
 
-        # Volume Analysis
-        vol_score = breakdown.get("volume", 50)
-        if vol_score >= 75:
-            volume_note = "Volume spike on up-day confirms buying conviction."
-        elif vol_score <= 25:
-            volume_note = "High volume on decline suggests institutional selling."
-        else:
-            volume_note = "Volume is average — no strong conviction signal."
+        # 5. Multi-timeframe
+        wt = mtf.get('weekly_trend', 'unknown')
+        if mtf.get('aligned'):
+            parts.append(f"Weekly trend confirms: {wt}.")
+        elif wt != "unknown":
+            parts.append(f"Weekly trend mixed ({wt}) — reduces confidence.")
 
-        # Risk Assessment
+        # 6. Trade context
+        if trade.get('direction') in ('LONG', 'SHORT'):
+            rr = trade.get('risk_reward', 'N/A')
+            parts.append(f"Risk:Reward = {rr}.")
+
+        insight = " ".join(parts)
+
+        # Risk assessment
         risks = []
-        if rsi > 70:
-            risks.append("Overbought RSI increases pullback risk")
-        if sma_score <= 35:
-            risks.append("Price below key moving averages (bearish structure)")
-        if macd_score <= 30:
-            risks.append("Negative MACD momentum")
-        if vol_score <= 30:
-            risks.append("Selling pressure indicated by volume")
-        if breakdown.get("adx", 50) >= 70 and sma_score <= 40:
-            risks.append("Strong bearish trend confirmed by ADX")
+        if breakout.get('status') == "WEAK": risks.append("Possible false breakout")
+        if vol_intel.get('divergence') == "BEARISH": risks.append("Price-volume divergence")
+        if regime_name == "VOLATILE": risks.append("High volatility environment")
+        if rsi > 70: risks.append(f"RSI overbought ({rsi})")
+        if rsi < 30: risks.append(f"RSI oversold ({rsi}) — could be falling knife")
+        if not mtf.get('aligned') and wt != "unknown": risks.append("Weekly trend not aligned")
 
-        if not risks:
-            if composite >= 65:
-                risk_text = "Low risk: Technical indicators are broadly aligned to the upside."
-            else:
-                risk_text = "Moderate risk: Mixed signals — position sizing should be conservative."
-        else:
-            risk_text = "; ".join(risks[:3]) + "."
+        risk_text = "; ".join(risks[:3]) + "." if risks else "No critical risks identified."
 
-        # Build the full insight
-        insight = f"{rsi_analysis} {trend_analysis} {momentum}"
-
-        # Modifier based on technical alignment
-        if len(bullish) >= 7:
-            modifier = 10
-        elif len(bullish) >= 5:
-            modifier = 5
-        elif len(bearish) >= 7:
-            modifier = -10
-        elif len(bearish) >= 5:
-            modifier = -5
-        else:
-            modifier = 0
-
-        # Confidence level
-        if len(bullish) >= 6 or len(bearish) >= 6:
-            confidence = "high"
-        elif len(bullish) >= 4 or len(bearish) >= 4:
-            confidence = "medium"
-        else:
-            confidence = "low"
+        # Modifier
+        modifier = 0
+        if len(bullish) >= 7: modifier = 8
+        elif len(bullish) >= 5: modifier = 4
+        elif len(bearish) >= 7: modifier = -8
+        elif len(bearish) >= 5: modifier = -4
+        if bo_status == "CONFIRMED":
+            modifier += 5 if breakout.get('type') == "BULLISH" else -5
+        if smart and 'BUYING' in smart: modifier += 3
+        elif smart and 'SELLING' in smart: modifier -= 3
 
         sentiment = "bullish" if len(bullish) > len(bearish) else "bearish" if len(bearish) > len(bullish) else "neutral"
+        confidence = "high" if abs(modifier) >= 10 else "medium" if abs(modifier) >= 5 else "low"
 
         return {
-            "ai_modifier": modifier,
+            "ai_modifier": max(-20, min(20, modifier)),
             "sentiment": sentiment,
             "insight": insight,
             "confidence": confidence,
             "key_risk": risk_text,
-            "volume_analysis": volume_note,
             "bullish_count": len(bullish),
             "bearish_count": len(bearish),
-            "neutral_count": len(neutral),
+            "neutral_count": len(breakdown) - len(bullish) - len(bearish),
         }
 
     async def analyze_ticker_sentiment(self, ticker: str, technical_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Try Gemini first; fall back to smart technical analysis."""
-
-        # Always generate technical fallback
         fallback = self._generate_technical_insight(ticker, technical_data)
-
         articles = self.news_service.get_top_headlines(category="business")
         if not articles or not self.model:
             return fallback
 
         headlines = [a.get('title', '') for a in articles[:15] if a.get('title')]
         headlines_str = "\n".join(f"- {h}" for h in headlines)
-
+        regime = technical_data.get("regime", {}).get("regime", "UNKNOWN")
         composite = technical_data.get("composite_score", 50)
-        rsi = technical_data.get("rsi", 50)
-        recommendation = technical_data.get("recommendation", "HOLD")
-        signals = technical_data.get("signals", [])
 
-        prompt = f"""You are a senior quantitative analyst. Analyze stock ticker "{ticker}".
-
-TECHNICAL DATA:
-- Composite Score: {composite}/100 | RSI: {rsi} | Signal: {recommendation}
-- Active Signals: {', '.join(signals) if signals else 'None'}
-
-MARKET HEADLINES:
+        prompt = f"""You are a senior quant. Analyze "{ticker}" (Market: {regime}, Score: {composite}/100).
+HEADLINES:
 {headlines_str}
-
-Respond in EXACTLY this JSON (no markdown, no backticks):
-{{"sentiment_modifier": <int -20 to +20>, "sentiment": "<bullish|bearish|neutral>", "insight": "<2 sentences about what headlines + technicals suggest for {ticker}>", "confidence": "<high|medium|low>", "key_risk": "<1 sentence biggest risk>"}}"""
+Respond in JSON only (no markdown): {{"sentiment_modifier": <int -20 to +20>, "sentiment": "<bullish|bearish|neutral>", "insight": "<2 sentences>", "confidence": "<high|medium|low>", "key_risk": "<1 sentence>"}}"""
 
         try:
             response = self.model.generate_content(prompt)
@@ -181,59 +142,41 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
             if text.startswith("```"):
                 text = text.split("\n", 1)[1] if "\n" in text else text
                 text = text.rsplit("```", 1)[0].strip()
-
             data = json.loads(text)
             modifier = max(-20, min(20, int(data.get("sentiment_modifier", 0))))
-
             return {
                 "ai_modifier": modifier,
                 "sentiment": data.get("sentiment", "neutral"),
                 "insight": data.get("insight", fallback["insight"]),
                 "confidence": data.get("confidence", "medium"),
                 "key_risk": data.get("key_risk", fallback["key_risk"]),
-                "volume_analysis": fallback["volume_analysis"],
                 "bullish_count": fallback["bullish_count"],
                 "bearish_count": fallback["bearish_count"],
                 "neutral_count": fallback["neutral_count"],
             }
-
         except Exception as e:
             print(f"Gemini failed for {ticker}: {e}. Using technical fallback.")
             return fallback
 
     async def predict_stock_outcome(self, ticker: str, technical_summary: Dict[str, Any]) -> Dict[str, Any]:
-        """Final prediction: Technical Score + AI Modifier = Final Score."""
         composite_score = technical_summary.get("composite_score", 50)
         breakdown = technical_summary.get("breakdown", {})
 
         ai_data = await self.analyze_ticker_sentiment(ticker, technical_summary)
         ai_modifier = ai_data.get("ai_modifier", 0)
-
         final_score = max(0, min(100, composite_score + ai_modifier))
 
-        if final_score >= 80:
-            prediction = "STRONG BUY"
-        elif final_score >= 65:
-            prediction = "BUY"
-        elif final_score >= 45:
-            prediction = "HOLD"
-        elif final_score >= 30:
-            prediction = "SELL"
-        else:
-            prediction = "STRONG SELL"
+        if final_score >= 80: prediction = "STRONG BUY"
+        elif final_score >= 65: prediction = "BUY"
+        elif final_score >= 45: prediction = "HOLD"
+        elif final_score >= 30: prediction = "SELL"
+        else: prediction = "STRONG SELL"
 
         if final_score >= 50:
             probability = 50 + (final_score - 50) * 0.9
         else:
             probability = 50 - (50 - final_score) * 0.9
         probability = max(5.0, min(95.0, probability))
-
-        if ai_modifier <= -10:
-            geo_risk = "High"
-        elif ai_modifier <= -5:
-            geo_risk = "Medium"
-        else:
-            geo_risk = "Low"
 
         return {
             "prediction": prediction,
@@ -245,9 +188,9 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
             "ai_insight": ai_data.get("insight", ""),
             "ai_confidence": ai_data.get("confidence", "low"),
             "key_risk": ai_data.get("key_risk", ""),
-            "geopolitical_risk": geo_risk,
-            "volume_analysis": ai_data.get("volume_analysis", ""),
+            "geopolitical_risk": "High" if ai_modifier <= -10 else "Medium" if ai_modifier <= -5 else "Low",
             "bullish_count": ai_data.get("bullish_count", 0),
             "bearish_count": ai_data.get("bearish_count", 0),
+            "neutral_count": ai_data.get("neutral_count", 0),
             "breakdown": breakdown,
         }
