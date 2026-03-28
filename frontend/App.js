@@ -79,69 +79,118 @@ const StockRow = ({ item, onPress }) => {
   );
 };
 
+// ─── Mini Bar for indicator score ──────────────────────────────────
+const ScoreBar = ({ label, value }) => {
+  const clr = value >= 65 ? C.buy : value >= 45 ? C.warn : C.sell;
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+      <Text style={{ color: C.muted, fontSize: 10, width: 70, fontWeight: '600' }}>{label}</Text>
+      <View style={{ flex: 1, height: 4, backgroundColor: C.border, borderRadius: 2, overflow: 'hidden', marginHorizontal: 8 }}>
+        <View style={{ height: '100%', width: `${Math.min(value, 100)}%`, backgroundColor: clr, borderRadius: 2 }} />
+      </View>
+      <Text style={{ color: clr, fontSize: 10, fontWeight: '700', width: 28, textAlign: 'right' }}>{value}</Text>
+    </View>
+  );
+};
+
 // ─── Detail Bottom Sheet ───────────────────────────────────────────
 const DetailSheet = ({ stock, onClose }) => {
   if (!stock) return null;
   const t = tag(stock.recommendation);
   const prob = parseFloat(stock.probability) || 50;
+  const bd = stock.breakdown || {};
+  const labels = { rsi: 'RSI', macd: 'MACD', sma_cross: 'SMA 20/50', ema_cross: 'EMA 12/26', bollinger: 'Bollinger', volume: 'Volume', adx: 'ADX', stochastic: 'Stochastic', trend_200: 'SMA 200' };
 
   return (
     <TouchableOpacity style={sheet.overlay} onPress={onClose} activeOpacity={1}>
-      <TouchableOpacity style={sheet.panel} activeOpacity={1} onPress={() => {}}>
-        <View style={sheet.drag} />
+      <ScrollView style={{ flex: 1, justifyContent: 'flex-end' }} contentContainerStyle={{ justifyContent: 'flex-end', flexGrow: 1 }}>
+        <TouchableOpacity style={sheet.panel} activeOpacity={1} onPress={() => {}}>
+          <View style={sheet.drag} />
 
-        {/* Title Row */}
-        <View style={sheet.titleRow}>
-          <View>
-            <Text style={txt.sheetTicker}>{stock.ticker}</Text>
-            <Text style={[txt.sheetPrice, { color: t.color }]}>${stock.price?.toLocaleString()}</Text>
+          {/* Title */}
+          <View style={sheet.titleRow}>
+            <View>
+              <Text style={txt.sheetTicker}>{stock.ticker}</Text>
+              <Text style={[txt.sheetPrice, { color: t.color }]}>${stock.price?.toLocaleString()}</Text>
+            </View>
+            <View style={{ alignItems: 'flex-end' }}>
+              <View style={[card.badge, { backgroundColor: t.bg, paddingHorizontal: 14, paddingVertical: 8 }]}>
+                <Text style={[txt.badge, { color: t.color, fontSize: 12 }]}>{stock.recommendation}</Text>
+              </View>
+              <Text style={{ color: C.muted, fontSize: 10, marginTop: 4 }}>Score: {stock.final_score || stock.composite_score || '—'}/100</Text>
+            </View>
           </View>
-          <View style={[card.badge, { backgroundColor: t.bg, paddingHorizontal: 14, paddingVertical: 8 }]}>
-            <Text style={[txt.badge, { color: t.color, fontSize: 12 }]}>{stock.recommendation}</Text>
-          </View>
-        </View>
 
-        {/* Metrics Grid */}
-        <View style={sheet.metricsRow}>
-          <View style={sheet.metric}>
-            <Text style={txt.label}>RSI</Text>
-            <Text style={[txt.metricVal, { color: stock.rsi < 35 ? C.buy : stock.rsi > 65 ? C.sell : C.warn }]}>{stock.rsi}</Text>
+          {/* Metrics Row */}
+          <View style={sheet.metricsRow}>
+            <View style={sheet.metric}>
+              <Text style={txt.label}>RSI</Text>
+              <Text style={[txt.metricVal, { color: stock.rsi < 35 ? C.buy : stock.rsi > 65 ? C.sell : C.warn }]}>{stock.rsi}</Text>
+            </View>
+            <View style={[sheet.metric, { borderLeftWidth: 1, borderLeftColor: C.border, borderRightWidth: 1, borderRightColor: C.border }]}>
+              <Text style={txt.label}>CONFIDENCE</Text>
+              <Text style={[txt.metricVal, { color: t.color }]}>{prob.toFixed(1)}%</Text>
+            </View>
+            <View style={sheet.metric}>
+              <Text style={txt.label}>SENTIMENT</Text>
+              <Text style={[txt.metricVal, { color: stock.ai_sentiment === 'bullish' ? C.buy : stock.ai_sentiment === 'bearish' ? C.sell : C.warn, fontSize: 13 }]}>
+                {(stock.ai_sentiment || 'neutral').toUpperCase()}
+              </Text>
+            </View>
           </View>
-          <View style={[sheet.metric, { borderLeftWidth: 1, borderLeftColor: C.border, borderRightWidth: 1, borderRightColor: C.border }]}>
-            <Text style={txt.label}>AI PROBABILITY</Text>
-            <Text style={[txt.metricVal, { color: t.color }]}>{prob.toFixed(1)}%</Text>
-          </View>
-          <View style={sheet.metric}>
-            <Text style={txt.label}>GEO RISK</Text>
-            <Text style={[txt.metricVal, { color: stock.geopolitical_risk === 'High' ? C.sell : C.buy }]}>
-              {stock.geopolitical_risk || 'LOW'}
-            </Text>
-          </View>
-        </View>
 
-        {/* Probability Bar */}
-        <View style={sheet.probSection}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-            <Text style={txt.label}>CONFIDENCE</Text>
-            <Text style={[txt.label, { color: t.color }]}>{prob.toFixed(1)}%</Text>
-          </View>
-          <View style={sheet.probTrack}>
-            <View style={[sheet.probFill, { width: `${prob}%`, backgroundColor: t.color }]} />
-          </View>
-        </View>
+          {/* Signal Strength */}
+          {(stock.bullish_count != null) && (
+            <View style={{ marginBottom: 16 }}>
+              <Text style={[txt.label, { marginBottom: 8 }]}>SIGNAL STRENGTH</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={{ flex: 1, backgroundColor: C.buyFaded, borderRadius: 8, padding: 10, alignItems: 'center' }}>
+                  <Text style={{ color: C.buy, fontSize: 20, fontWeight: '800' }}>{stock.bullish_count}</Text>
+                  <Text style={{ color: C.buy, fontSize: 9, fontWeight: '600', marginTop: 2 }}>BULLISH</Text>
+                </View>
+                <View style={{ flex: 1, backgroundColor: 'rgba(240,165,0,0.12)', borderRadius: 8, padding: 10, alignItems: 'center' }}>
+                  <Text style={{ color: C.warn, fontSize: 20, fontWeight: '800' }}>{stock.neutral_count || 0}</Text>
+                  <Text style={{ color: C.warn, fontSize: 9, fontWeight: '600', marginTop: 2 }}>NEUTRAL</Text>
+                </View>
+                <View style={{ flex: 1, backgroundColor: C.sellFaded, borderRadius: 8, padding: 10, alignItems: 'center' }}>
+                  <Text style={{ color: C.sell, fontSize: 20, fontWeight: '800' }}>{stock.bearish_count}</Text>
+                  <Text style={{ color: C.sell, fontSize: 9, fontWeight: '600', marginTop: 2 }}>BEARISH</Text>
+                </View>
+              </View>
+            </View>
+          )}
 
-        {/* AI Insight */}
-        {stock.ai_insight && (
-          <View style={sheet.insightBox}>
-            <Text style={txt.label}>AI ANALYSIS</Text>
-            <Text style={sheet.insightText}>{stock.ai_insight}</Text>
-          </View>
-        )}
+          {/* Indicator Breakdown */}
+          {Object.keys(bd).length > 0 && (
+            <View style={sheet.insightBox}>
+              <Text style={[txt.label, { marginBottom: 8 }]}>INDICATOR BREAKDOWN</Text>
+              {Object.entries(bd).map(([key, val]) => (
+                <ScoreBar key={key} label={labels[key] || key} value={val} />
+              ))}
+            </View>
+          )}
 
-        <TouchableOpacity onPress={onClose} style={sheet.closeBtn}>
-          <Text style={sheet.closeBtnText}>Dismiss</Text>
+          {/* AI Analysis */}
+          {stock.ai_insight && (
+            <View style={sheet.insightBox}>
+              <Text style={txt.label}>ANALYSIS</Text>
+              <Text style={sheet.insightText}>{stock.ai_insight}</Text>
+            </View>
+          )}
+
+          {/* Risk */}
+          {stock.key_risk && (
+            <View style={[sheet.insightBox, { borderColor: 'rgba(255,107,107,0.2)' }]}>
+              <Text style={[txt.label, { color: C.sell }]}>⚠ KEY RISK</Text>
+              <Text style={[sheet.insightText, { color: '#B8505E' }]}>{stock.key_risk}</Text>
+            </View>
+          )}
+
+          <TouchableOpacity onPress={onClose} style={sheet.closeBtn}>
+            <Text style={sheet.closeBtnText}>Dismiss</Text>
+          </TouchableOpacity>
         </TouchableOpacity>
-      </TouchableOpacity>
+      </ScrollView>
     </TouchableOpacity>
   );
 };
@@ -178,16 +227,24 @@ export default function App() {
   const fetchDetail = async (ticker) => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API_URL}/stock/${ticker}`);
+      const res = await axios.get(`${API_URL}/stock/${ticker}`, { timeout: 30000 });
       const d = res.data;
       setSelected({
         ticker: d.ticker,
         price: d.ta_summary.last_price,
         rsi: d.ta_summary.rsi,
-        recommendation: d.ta_summary.recommendation,
+        recommendation: d.ai_prediction.prediction || d.ta_summary.recommendation,
+        composite_score: d.ta_summary.composite_score,
+        final_score: d.ai_prediction.final_score,
         probability: d.ai_prediction.probability,
         ai_insight: d.ai_prediction.ai_insight,
+        ai_sentiment: d.ai_prediction.ai_sentiment,
+        key_risk: d.ai_prediction.key_risk,
         geopolitical_risk: d.ai_prediction.geopolitical_risk,
+        bullish_count: d.ai_prediction.bullish_count,
+        bearish_count: d.ai_prediction.bearish_count,
+        neutral_count: 9 - (d.ai_prediction.bullish_count || 0) - (d.ai_prediction.bearish_count || 0),
+        breakdown: d.ai_prediction.breakdown || d.ta_summary.breakdown || {},
       });
     } catch {
       setError('Ticker not found');
