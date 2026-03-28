@@ -103,7 +103,7 @@ const DetailSheet = ({ stock, onClose }) => {
 
   return (
     <TouchableOpacity style={sheet.overlay} onPress={onClose} activeOpacity={1}>
-      <ScrollView style={{ flex: 1, justifyContent: 'flex-end' }} contentContainerStyle={{ justifyContent: 'flex-end', flexGrow: 1 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ justifyContent: 'flex-end', flexGrow: 1 }}>
         <TouchableOpacity style={sheet.panel} activeOpacity={1} onPress={() => {}}>
           <View style={sheet.drag} />
 
