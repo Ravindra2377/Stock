@@ -89,6 +89,17 @@ class AIService:
         if trade.get('note'):
             parts.append(trade['note'])
 
+        # V4: Probabilities and Playbook
+        probs = ta.get('probabilities', {})
+        if probs:
+            parts.append(f"Math: Up {probs.get('bullish', 0)}% | Sideways {probs.get('sideways', 0)}% | Down {probs.get('bearish', 0)}%.")
+
+            
+        playbook = ta.get('playbook', {})
+        if playbook and playbook.get('plan'):
+            plan_str = " | ".join(playbook.get('plan'))
+            parts.append(f"Playbook: {plan_str}")
+
         # 6b. Trap warning
         trap = ta.get("trap", {})
         if trap.get('trap'):
@@ -111,7 +122,7 @@ class AIService:
         if smart and 'BUYING' in smart: modifier += 3
         elif smart and 'SELLING' in smart: modifier -= 3
 
-        sentiment = "bullish" if len(bullish) > len(bearish) else "bearish" if len(bearish) > len(bullish) else "neutral"
+        sentiment = "positive" if len(bullish) > len(bearish) else "negative" if len(bearish) > len(bullish) else "neutral"
         confidence = "high" if abs(modifier) >= 10 else "medium" if abs(modifier) >= 5 else "low"
 
         return {
@@ -125,75 +136,134 @@ class AIService:
             "neutral_count": len(breakdown) - len(bullish) - len(bearish),
         }
 
+
+    FALLBACK_AI_RESPONSE = {
+        "score": 50,
+        "sentiment": "Neutral",
+        "insight": "AI analysis temporarily unavailable. Market structure remains the primary signal.",
+        "confidence": "Low",
+        "key_risk": "Technical data only; news sentiment not factored.",
+        "sources": [],
+        "negative_factors": ["AI Layer Timeout/Failure"],
+        "invalidation": "Restore AI connectivity to verify geopolitical factors."
+    }
+
     async def analyze_ticker_sentiment(self, ticker: str, technical_data: Dict[str, Any]) -> Dict[str, Any]:
-        fallback = self._generate_technical_insight(ticker, technical_data)
+        """Layer 3: AI Brain with strict JSON contract and fallback."""
+        fallback_insight = self._generate_technical_insight(ticker, technical_data)
+        
+        # Hydrate fallback with full contract structure
+        local_fallback = self.FALLBACK_AI_RESPONSE.copy()
+        local_fallback["score"] = technical_data.get("probabilities", {}).get("bullish", 50)
+        local_fallback["insight"] = fallback_insight["insight"]
+        local_fallback["key_risk"] = fallback_insight["key_risk"]
+
+        if not self.model:
+            return local_fallback
+
         articles = self.news_service.get_top_headlines(category="business")
-        if not articles or not self.model:
-            return fallback
+        headlines_str = "No recent news found."
+        if articles:
+            headlines = [a.get('title', '') for a in articles[:15] if a.get('title')]
+            headlines_str = "\n".join(f"- {h}" for h in headlines)
 
-        headlines = [a.get('title', '') for a in articles[:15] if a.get('title')]
-        headlines_str = "\n".join(f"- {h}" for h in headlines)
         regime = technical_data.get("regime", {}).get("regime", "UNKNOWN")
-        composite = technical_data.get("composite_score", 50)
+        probs = technical_data.get("probabilities", {})
+        probs_text = f"Up {probs.get('bullish')}% / Sideways {probs.get('sideways')}% / Down {probs.get('bearish')}%" if probs else ""
 
-        prompt = f"""You are a senior quant. Analyze "{ticker}" (Market: {regime}, Score: {composite}/100).
+        prompt = f"""You are a professional trading analyst. Analyze "{ticker}" for the {regime} regime.
+GROWTH PROBABILITIES: {probs_text}
 HEADLINES:
 {headlines_str}
-Respond in JSON only (no markdown): {{"sentiment_modifier": <int -20 to +20>, "sentiment": "<bullish|bearish|neutral>", "insight": "<2 sentences>", "confidence": "<high|medium|low>", "key_risk": "<1 sentence>"}}"""
+TECHNICAL CONTEXT:
+"{fallback_insight.get('insight', '')}"
+
+INSTRUCTIONS:
+1. Use simple English. NEVER use 'bullish', 'bearish', 'stochastic', 'bollinger', 'macd', or 'rsi'. 
+2. Use 'Expanding/Rising' for up and 'Falling/Contracting' for down.
+3. Identify exactly 3 real sources/events from headlines.
+4. List the #1 reason this trade might fail (Invalidation).
+
+Respond in JSON only:
+{{
+  "score": <int 0-100 derived from sentiment + technicals>,
+  "sentiment": "<Positive|Negative|Neutral>",
+  "insight": "<2 sentences simple English>",
+  "confidence": "<High|Medium|Low>",
+  "key_risk": "<1 sentence simple English>",
+  "sources": ["<source 1>", "<source 2>", "<source 3>"],
+  "negative_factors": ["<factor 1>", "<factor 2>"],
+  "invalidation": "<The exact price or event that makes this analysis wrong>"
+}}"""
 
         try:
             response = self.model.generate_content(prompt)
-            text = response.text.strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1] if "\n" in text else text
-                text = text.rsplit("```", 1)[0].strip()
-            data = json.loads(text)
-            modifier = max(-20, min(20, int(data.get("sentiment_modifier", 0))))
+            data = json.loads(response.text.strip().replace("```json", "").replace("```", ""))
+            
+            # Validation & Sanitization
             return {
-                "ai_modifier": modifier,
-                "sentiment": data.get("sentiment", "neutral"),
-                "insight": data.get("insight", fallback["insight"]),
-                "confidence": data.get("confidence", "medium"),
-                "key_risk": data.get("key_risk", fallback["key_risk"]),
-                "bullish_count": fallback["bullish_count"],
-                "bearish_count": fallback["bearish_count"],
-                "neutral_count": fallback["neutral_count"],
+                "ai_score": max(0, min(100, int(data.get("score", 50)))),
+                "sentiment": data.get("sentiment", "Neutral"),
+                "insight": data.get("insight", local_fallback["insight"]),
+                "confidence": data.get("confidence", "Medium"),
+                "key_risk": data.get("key_risk", local_fallback["key_risk"]),
+                "sources": data.get("sources", []),
+                "negative_factors": data.get("negative_factors", []),
+                "invalidation": data.get("invalidation", "Breach of primary support/resistance level"),
+                "bullish_count": fallback_insight["bullish_count"],
+                "bearish_count": fallback_insight["bearish_count"],
+                "neutral_count": fallback_insight["neutral_count"],
             }
         except Exception as e:
-            print(f"Gemini failed for {ticker}: {e}. Using technical fallback.")
-            return fallback
+            print(f"Gemini Contract Violation: {e}. Triggering institutional fallback.")
+            return local_fallback
 
     async def predict_stock_outcome(self, ticker: str, technical_summary: Dict[str, Any]) -> Dict[str, Any]:
-        composite_score = technical_summary.get("composite_score", 50)
+        """Final Fusion: Orchestrates L1-L3 into a deterministic verdict."""
+        ind_score = technical_summary.get("ind_score", 50)
+        struct_score = technical_summary.get("struct_score", 50)
         breakdown = technical_summary.get("breakdown", {})
+        probs = technical_summary.get("probabilities", {}) or {}
 
         ai_data = await self.analyze_ticker_sentiment(ticker, technical_summary)
-        ai_modifier = ai_data.get("ai_modifier", 0)
-        final_score = max(0, min(100, composite_score + ai_modifier))
+        
+        # New Fusion Logic: AI Score is now integrated by the model itself
+        ai_score = float(ai_data.get("ai_score", 50))
 
-        if final_score >= 80: prediction = "STRONG BUY"
-        elif final_score >= 65: prediction = "BUY"
-        elif final_score >= 45: prediction = "HOLD"
-        elif final_score >= 30: prediction = "SELL"
-        else: prediction = "STRONG SELL"
+        # Unified Fusion: 0.4 AI + 0.3 Indicators + 0.3 Structure
+        final_score = (0.4 * ai_score) + (0.3 * ind_score) + (0.3 * struct_score)
+        final_p = round(float(final_score), 1)
 
-        if final_score >= 50:
-            probability = 50 + (final_score - 50) * 0.9
-        else:
-            probability = 50 - (50 - final_score) * 0.9
-        probability = max(5.0, min(95.0, probability))
+        # Institutional Position Sizing Tier
+        if final_p > 85: conviction = "EXTREME"
+        elif final_p > 72: conviction = "HIGH"
+        elif final_p > 65: conviction = "MEDIUM"
+        else: conviction = "LOW"
 
+        # Directional Engine
+        if final_p > 65: 
+            prediction = "Expanding (Buy)"
+        elif final_p < 35: 
+            prediction = "Contracting (Sell)"
+        else: 
+            prediction = "Stability (Hold)"
+            
         return {
             "prediction": prediction,
-            "probability": f"{probability:.1f}%",
-            "final_score": round(float(final_score), 1),
-            "technical_score": composite_score,
-            "ai_modifier": ai_modifier,
-            "ai_sentiment": ai_data.get("sentiment", "neutral"),
+            "probability": f"{final_p:.1f}%",
+            "final_score": final_p,
+            "conviction": conviction,
+            "ind_score": ind_score,
+            "struct_score": struct_score,
+            "ai_score": ai_score,
+            "ai_sentiment": ai_data.get("sentiment", "Neutral"),
             "ai_insight": ai_data.get("insight", ""),
-            "ai_confidence": ai_data.get("confidence", "low"),
+            "ai_confidence": ai_data.get("confidence", "Low"),
             "key_risk": ai_data.get("key_risk", ""),
-            "geopolitical_risk": "High" if ai_modifier <= -10 else "Medium" if ai_modifier <= -5 else "Low",
+            "sources": ai_data.get("sources", []),
+            "negative_factors": ai_data.get("negative_factors", []),
+            "invalidation": ai_data.get("invalidation", "Default support breach"),
+            "geopolitical_risk": "High" if ai_score < 40 else "Medium" if ai_score < 60 else "Low",
             "bullish_count": ai_data.get("bullish_count", 0),
             "bearish_count": ai_data.get("bearish_count", 0),
             "neutral_count": ai_data.get("neutral_count", 0),

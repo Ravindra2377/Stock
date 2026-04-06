@@ -2,11 +2,13 @@ import pandas as pd
 import numpy as np
 import ta
 from typing import Dict, Any, List, Tuple
+import datetime
 
 class IndicatorService:
+
     """
-    Pro Trading Engine v3.0 — ELITE
-    ─────────────────────────────────
+    Pro Trading Engine v3.0 — ELITE (PANVI_1.2)
+    ──────────────────────────────────────────
     - Market Regime Detection + Dynamic Weights
     - Confirmed Breakout + Trap Detection
     - Smart Money (Compression→Expansion)
@@ -35,6 +37,49 @@ class IndicatorService:
             'breakout': 0.18, 'bollinger': 0.08, 'trend_200': 0.06,
         },
     }
+
+    # CONVICTION_TIERS (Single Source of Truth)
+    CONVICTION_TIERS = [
+        {"min": 80.0, "max": 100.0, "grade": "a", "label": "EXTREME",  "size_pct": 100},
+        {"min": 70.0, "max": 79.0,  "grade": "b", "label": "HIGH",     "size_pct": 75},
+        {"min": 65.0, "max": 69.0,  "grade": "c", "label": "MODERATE", "size_pct": 50},
+        {"min": 35.0, "max": 64.0,  "grade": "d", "label": "LOW",      "size_pct": 0},
+        {"min": 0.0,  "max": 34.0,  "grade": "e", "label": "VERY LOW", "size_pct": 0},
+    ]
+
+    ALGORITHM_VERSION = "PANVI_1.2"
+
+    @classmethod
+    def _check_earnings_proximity(cls, ticker: str) -> bool:
+        """Check if earnings are within 5 days (Robust with Normalized Dates)."""
+        try:
+            display_ticker = ticker.split('.')[0].upper()
+            df_earnings = pd.read_csv('/home/kpanviravindra/Desktop/jiva_t/Stock/backend/earnings_calendar.csv')
+            # Standardize tickers in CSV for exact match
+            df_earnings['ticker_clean'] = df_earnings['ticker'].apply(lambda x: str(x).split('.')[0].upper())
+            row = df_earnings[df_earnings['ticker_clean'] == display_ticker]
+            
+            if not row.empty:
+                earning_date = pd.to_datetime(row['earnings_date'].iloc[0]).normalize()
+                today = pd.Timestamp.now().normalize()
+                days_to_earnings = (earning_date - today).days
+                # Trigger if today is earnings or within 0-5 days
+                return 0 <= days_to_earnings <= 5
+        except:
+            pass
+        return False
+    @classmethod
+    def _get_currency_symbol(cls, ticker: str) -> str:
+        """Detect currency by exchange suffix."""
+        t = ticker.upper()
+        if ".NS" in t or ".BO" in t:
+            return "₹"
+        elif ".HK" in t:
+            return "HK$"
+        elif ".L" in t:
+            return "£"
+        else:
+            return "$"
 
     # ═══════════════════════════════════════════════════════════════
     #  CALCULATE ALL INDICATORS
@@ -236,9 +281,11 @@ class IndicatorService:
             support_zones = [{'price': float(min(lows)), 'touches': 1}]
 
         return {
-            "resistance": [{'price': round(z['price'], 2), 'touches': z['touches']} for z in resistance_zones[:3]],
-            "support": [{'price': round(z['price'], 2), 'touches': z['touches']} for z in support_zones[:3]],
+            "resistance": [{'price': float(f"{z['price']:.2f}"), 'touches': int(z['touches'])} for z in list(resistance_zones)[:3]],
+            "support": [{'price': float(f"{z['price']:.2f}"), 'touches': int(z['touches'])} for z in list(support_zones)[:3]],
         }
+
+
 
     # ═══════════════════════════════════════════════════════════════
     #  CONFIRMED BREAKOUT DETECTION
@@ -429,13 +476,14 @@ class IndicatorService:
             parts.append("Bullish divergence: selloff on declining volume")
 
         return {
-            "spike": spike or moderate_spike,
-            "ratio": round(vol_ratio, 1),
-            "trend": vol_trend,
+            "spike": bool(spike or moderate_spike),
+            "ratio": float(round(float(vol_ratio), 1)),
+            "trend": str(vol_trend),
             "divergence": divergence,
             "smart_money": smart_money,
             "detail": ". ".join(parts),
         }
+
 
     # ═══════════════════════════════════════════════════════════════
     #  MOMENTUM STRENGTH + RSI SLOPE
@@ -497,15 +545,22 @@ class IndicatorService:
 
         rsi_dir = "rising" if rsi_slope > 1 else "falling" if rsi_slope < -1 else "flat"
         detail = f"Momentum {acceleration.lower()}. ROC(5)={roc_5:.1f}%, RSI {rsi_dir} (slope={rsi_slope:.1f})"
-        return {"strength": strength, "acceleration": acceleration, "rsi_slope": round(rsi_slope, 1), "detail": detail}
+        return {"strength": float(strength), "acceleration": str(acceleration), "rsi_slope": float(round(float(rsi_slope), 1)), "detail": str(detail)}
+
 
     # ═══════════════════════════════════════════════════════════════
     #  TRADE STRUCTURE (Entry/Target/Stop Loss) + R:R FILTER
     # ═══════════════════════════════════════════════════════════════
-    @staticmethod
-    def generate_trade_structure(df: pd.DataFrame, sr_zones: Dict, recommendation: str, breakout: Dict = None) -> Dict[str, Any]:
-        """Generate actionable trade with ATR stop loss, correct target ordering, R:R filter, and pullback entry."""
+    @classmethod
+    def generate_trade_structure(cls, df: pd.DataFrame, sr_zones: Dict, recommendation: str, breakout: Dict[str, Any] = {}, overextended: Dict[str, Any] = {}, p_bull: float = 0.5) -> Dict[str, Any]:
+
+
+
+        """Generate actionable trade with Panvi Core Brain formulas: Weighted Entry, Prob-Adjusted Targets, Structure Stop."""
+        if not overextended: overextended = {}
+        if not breakout: breakout = {}
         if df.empty or len(df) < 5:
+
             return {"direction": "WAIT", "rr_value": 0}
 
         last = df.iloc[-1]
@@ -516,10 +571,25 @@ class IndicatorService:
         resistances = sr_zones.get('resistance', [])
 
         if recommendation in ("STRONG BUY", "BUY"):
-            entry = close
-            stop_loss = max(close - 1.5 * atr, supports[0]['price'] if supports else close * 0.95)
-
-            # Targets: T1 = nearest resistance, T2 = farther — ALWAYS T2 > T1 for LONG
+            # Panvi Phase 27: Optimized Weighted Entry Zone
+            supports = sr_zones.get('support', [])
+            resistances = sr_zones.get('resistance', [])
+            
+            # Correct Buy Price (50/30/20 Rule)
+            support_val = supports[0]['price'] if supports else close * 0.98
+            ema_20 = float(last.get('EMA_20', close))
+            correct_buy = cls.calculate_correct_buy_price(df, support_val, ema_20)
+            
+            is_ox = overextended.get('overextended', False) and overextended.get('type') == 'BULLISH'
+            entry = correct_buy if is_ox else close
+            trade_note = "Value Zone Entry: 50/30/20 weighted optimization enabled."
+            
+            # Expected Low (Stop): MIN(SwingLow, Support - 0.5 * ATR)
+            recent_lows = df.tail(10)['Low']
+            swing_low = float(recent_lows.min())
+            stop_loss = min(swing_low, support_val - 0.5 * atr)
+            
+            # Targets: T1 = nearest resistance, T2 = farther
             raw_targets = []
             for r in resistances:
                 if r['price'] > close:
@@ -528,17 +598,19 @@ class IndicatorService:
                 raw_targets = [close + 2 * atr, close + 3 * atr]
             elif len(raw_targets) < 2:
                 raw_targets.append(raw_targets[-1] + atr)
-            raw_targets.sort()  # ascending for LONG
+            raw_targets.sort()
             target_1, target_2 = raw_targets[0], raw_targets[1]
+            
+            # Expected High (Probability-Adjusted Target)
+            # Default to 0.5 if probabilities not yet passed
+            p_bull = 0.5
+            expected_high = cls.calculate_prob_adjusted_high(p_bull, target_1, target_2)
 
-            risk = entry - stop_loss
-            reward = target_1 - entry
-            rr = round(reward / risk, 1) if risk > 0 else 0
+            risk = abs(float(entry) - float(stop_loss))
+            reward = abs(float(target_1) - float(entry))
+            rr = float(round(float(reward / risk), 1)) if risk > 0 else 0.0
 
-            # Pullback entry suggestion
-            pullback_entry = None
-            if breakout and breakout.get('status') == 'CONFIRMED' and breakout.get('level'):
-                pullback_entry = round(breakout['level'], 2)  # retest the breakout level
+            pullback_entry = round(correct_buy, 2)
 
             return {
                 "direction": "LONG",
@@ -549,13 +621,29 @@ class IndicatorService:
                 "rr_value": rr,
                 "atr": round(atr, 2),
                 "pullback_entry": pullback_entry,
+                "expected_high": round(expected_high, 2),
+                "expected_low": round(stop_loss, 2),
+                "correct_buy_price": round(correct_buy, 2),
                 "rr_acceptable": rr >= 1.5,
+                "note": trade_note
             }
         elif recommendation in ("STRONG SELL", "SELL"):
+            # Sell side follows similar logic for Expected High/Low
+            resistances = sr_zones.get('resistance', [])
+            supports = sr_zones.get('support', [])
+            
+            resistance_val = resistances[0]['price'] if resistances else close * 1.02
+            ema_20 = float(last.get('EMA_20', close))
+            
+            # For SHORT, entry is optimized near resistance
             entry = close
-            stop_loss = min(close + 1.5 * atr, resistances[0]['price'] if resistances else close * 1.05)
+            
+            # Expected High (Stop for Short)
+            recent_highs = df.tail(10)['High']
+            swing_high = float(recent_highs.max())
+            stop_loss = max(swing_high, resistance_val + 0.5 * atr)
 
-            # Targets: T1 = nearest support, T2 = farther — ALWAYS T2 < T1 for SHORT
+            # Targets
             raw_targets = []
             for s in supports:
                 if s['price'] < close:
@@ -564,16 +652,12 @@ class IndicatorService:
                 raw_targets = [close - 2 * atr, close - 3 * atr]
             elif len(raw_targets) < 2:
                 raw_targets.append(raw_targets[-1] - atr)
-            raw_targets.sort(reverse=True)  # descending for SHORT (nearest first)
+            raw_targets.sort(reverse=True)
             target_1, target_2 = raw_targets[0], raw_targets[1]
 
-            risk = stop_loss - entry
-            reward = entry - target_1
-            rr = round(reward / risk, 1) if risk > 0 else 0
-
-            pullback_entry = None
-            if breakout and breakout.get('status') == 'CONFIRMED' and breakout.get('level'):
-                pullback_entry = round(breakout['level'], 2)
+            risk = abs(float(stop_loss) - float(entry))
+            reward = abs(float(entry) - float(target_1))
+            rr = float(round(float(reward / risk), 1)) if risk > 0 else 0.0
 
             return {
                 "direction": "SHORT",
@@ -583,21 +667,56 @@ class IndicatorService:
                 "risk_reward": f"1:{rr}",
                 "rr_value": rr,
                 "atr": round(atr, 2),
-                "pullback_entry": pullback_entry,
+                "expected_high": round(stop_loss, 2),
+                "expected_low": round(target_2, 2),
+                "correct_buy_price": round(entry, 2),
                 "rr_acceptable": rr >= 1.5,
             }
+
         else:
+            # For HOLD/CHOP, we still want to show the 'Value Zone' and projections
+            supports = sr_zones.get('support', [])
+            resistances = sr_zones.get('resistance', [])
+            ema_20 = float(last.get('EMA_20', close))
+            
+            support_val = supports[0]['price'] if supports else close * 0.98
+            res_val = resistances[0]['price'] if resistances else close * 1.02
+            
+            # Theoretical Entry (Value Zone)
+            correct_buy = cls.calculate_correct_buy_price(df, support_val, ema_20)
+            
+            # Theoretical Projections
+            # Using 50/50 probability proxy for targets if conviction is low
+            t1 = res_val
+            t2 = res_val + (res_val - support_val) if res_val > support_val else res_val * 1.05
+            
+                                
+            # Use probability proxy for high even in HOLD
+            # probability from main context if available, else 0.5
+            p_bull_proxy = 0.5
+            exp_high = cls.calculate_prob_adjusted_high(p_bull_proxy, t1, t2)
+            
+            # Stop proxy
+            recent_lows = df.tail(10)['Low']
+            swing_low = float(recent_lows.min())
+            exp_low = min(swing_low, support_val - 0.5 * atr)
+
             return {
                 "direction": "WAIT",
                 "entry": None,
                 "stop_loss": None,
-                "targets": [],
+                "targets": [round(t1, 2), round(t2, 2)],
+                "expected_high": round(exp_high, 2),
+                "expected_low": round(exp_low, 2),
+                "correct_buy_price": round(correct_buy, 2),
                 "risk_reward": "N/A",
                 "rr_value": 0,
                 "atr": round(atr, 2),
                 "rr_acceptable": False,
-                "note": "No clear trade setup — wait for confirmation"
+                "note": "Conviction threshold (65) not met. Viewing theoretical projections."
             }
+
+
 
     # ═══════════════════════════════════════════════════════════════
     #  INDIVIDUAL INDICATOR SCORERS
@@ -729,6 +848,85 @@ class IndicatorService:
         return 50.0
 
     # ═══════════════════════════════════════════════════════════════
+    #  PANVI CORE BRAIN: 3-LAYER INPUT SYSTEM
+    # ═══════════════════════════════════════════════════════════════
+
+    @classmethod
+    def calculate_structure_score(cls, df: pd.DataFrame, sr_zones: Dict, regime: str) -> float:
+        """Layer 1: Market Structure (Ground Truth) Score."""
+        if df.empty: return 50.0
+        last = df.iloc[-1]
+        close = float(last['Close'])
+        adx = float(last.get('ADX', 20))
+        
+        # 1. Trend Alignment (ADX + DI)
+        trend_score = 50.0
+        if adx > 25:
+            di_plus = float(last.get('DI_Plus', 0))
+            di_minus = float(last.get('DI_Minus', 0))
+            if di_plus > di_minus: trend_score = min(100, 50 + (adx - 20) * 2)
+            else: trend_score = max(0, 50 - (adx - 20) * 2)
+        
+        # 2. Level Proximity (Distance to Support vs Resistance)
+        level_score = 50.0
+        supports = sr_zones.get('support', [])
+        resistances = sr_zones.get('resistance', [])
+        
+        if supports and resistances:
+            s_dist = abs(close - supports[0]['price'])
+            r_dist = abs(resistances[0]['price'] - close)
+            total = s_dist + r_dist
+            if total > 0:
+                level_score = (r_dist / total) * 100
+        
+        # 3. Regime Integration
+        if regime == "TRENDING": structure_score = (0.6 * trend_score) + (0.4 * level_score)
+        elif regime == "SIDEWAYS": structure_score = (0.2 * trend_score) + (0.8 * level_score)
+        else: structure_score = (0.4 * trend_score) + (0.6 * level_score)
+            
+        return float(round(structure_score, 1))
+
+
+    @staticmethod
+    def calculate_indicator_score(scores: Dict[str, float], weights: Dict[str, float]) -> float:
+        """Layer 2: Indicators (Confirmation Layer). Normalizes all technicals."""
+        if not scores: return 50.0
+        total_weight = sum(weights.get(k, 0) for k in scores)
+        if total_weight == 0: return 50.0
+        
+        weighted_sum = sum(scores[k] * weights.get(k, 0) for k in scores)
+        return float(round(weighted_sum / total_weight, 1))
+
+    @staticmethod
+    def calculate_panvi_fusion(ai_prob: float, ind_score: float, struct_score: float) -> float:
+        """Unified Signal Engine: 0.4 AI + 0.3 Indicator + 0.3 Structure."""
+        # ai_prob is 0.0-1.0, convert to 0-100
+        ai_normalized = ai_prob * 100
+        final_score = (0.4 * ai_normalized) + (0.3 * ind_score) + (0.3 * struct_score)
+        return float(round(final_score, 1))
+
+    @staticmethod
+    def calculate_correct_buy_price(df: pd.DataFrame, support: float, ema: float) -> float:
+        """🎯 50/30/20 Value Zone Entry: Support (50%) + EMA (30%) + Mean (20%)."""
+        if df.empty: return support
+        last = df.iloc[-1]
+        close = float(last['Close'])
+        high = float(last['High']) if 'High' in df.columns else close
+        low = float(last['Low']) if 'Low' in df.columns else close
+        mean_price = (high + low + close) / 3
+        
+        # Weighted Average
+        entry = (0.5 * support) + (0.3 * ema) + (0.2 * mean_price)
+        return float(round(entry, 2))
+
+    @staticmethod
+    def calculate_prob_adjusted_high(p_bull: float, t1: float, t2: float) -> float:
+        """📈 Probability-Adjusted Target: Aggressive vs Conservative scaling."""
+        # expected_high = (P_bull * target_2) + ((1 - P_bull) * target_1)
+        target = (p_bull * t2) + ((1 - p_bull) * t1)
+        return float(round(target, 2))
+
+    # ═══════════════════════════════════════════════════════════════
     #  MULTI-TIMEFRAME CONFIRMATION
     # ═══════════════════════════════════════════════════════════════
     @staticmethod
@@ -793,11 +991,238 @@ class IndicatorService:
             return {"tier": "D", "label": "NO SETUP", "color": "#FF6B6B"}
 
     # ═══════════════════════════════════════════════════════════════
-    #  MAIN SIGNAL GENERATOR
+    #  HEDGE-FUND LOGIC (v4.0) — DEEP ENGINES
     # ═══════════════════════════════════════════════════════════════
+    @staticmethod
+    def detect_overextension(df: pd.DataFrame) -> Dict[str, Any]:
+        """Detect if price is stretched too far from the 20 EMA using ATR."""
+        if df.empty or len(df) < 20: return {"overextended": False, "detail": ""}
+        close = float(df['Close'].iloc[-1])
+        ema_20 = float(df['EMA_20'].iloc[-1]) if 'EMA_20' in df.columns else close
+        atr = float(df['ATR'].iloc[-1]) if 'ATR' in df.columns else (close * 0.02)
+        
+        if ema_20 == 0 or atr == 0: return {"overextended": False, "detail": ""}
+        
+        dist = close - ema_20
+        atr_dist = dist / atr
+        
+        if atr_dist > 2.5:
+            return {"overextended": True, "type": "BULLISH", "detail": f"Price stretched {atr_dist:.1f} ATRs above trend"}
+        elif atr_dist < -2.5:
+            return {"overextended": True, "type": "BEARISH", "detail": f"Price stretched {abs(atr_dist):.1f} ATRs below trend"}
+        
+        return {"overextended": False, "detail": ""}
+
+    @staticmethod
+    def map_liquidity(df: pd.DataFrame) -> Dict[str, Any]:
+        """Detect equal highs/lows acting as liquidity magnets."""
+        if df.empty or len(df) < 15: return {"detected": False, "pools": []}
+        
+        recent = df.tail(15)
+        highs = recent['High'].values if 'High' in recent.columns else recent['Close'].values
+        lows = recent['Low'].values if 'Low' in recent.columns else recent['Close'].values
+        close = float(df['Close'].iloc[-1])
+        
+        pools = []
+        max_h = max(highs[:-1])
+        min_l = min(lows[:-1])
+        
+        if close < max_h and (max_h - close)/close < 0.03:
+            pools.append(f"Buy-side liquidity above at {max_h:.2f}")
+        if close > min_l and (close - min_l)/close < 0.03:
+            pools.append(f"Sell-side liquidity below at {min_l:.2f}")
+            
+        return {"detected": len(pools) > 0, "pools": pools}
+
+    @staticmethod
+    def detect_trend_phase(regime: Dict, breakout: Dict, momentum: Dict, vol_intel: Dict) -> str:
+        """Classify into Accumulation, Breakout, Expansion, Exhaustion."""
+        reg = regime.get('regime')
+        bo = breakout.get('status')
+        accel = momentum.get('acceleration', '')
+        smart = vol_intel.get('smart_money') or ''
+        
+        if reg == "SIDEWAYS":
+            if "BUYING" in smart: return "ACCUMULATION"
+            elif "SELLING" in smart: return "DISTRIBUTION"
+            return "CHOPPY"
+        if bo in ["CONFIRMED", "ATTEMPT"]:
+            return "BREAKOUT"
+        if reg == "TRENDING":
+            if "ACCELERATING" in accel: return "EXPANSION (Strong Trend)"
+            if accel == "DECELERATING": return "EXHAUSTION (Weakening)"
+            return "TRENDING"
+        return "UNKNOWN"
+
+    @staticmethod
+    def calculate_probabilities(score: float, regime: Dict[str, Any], mtf: Dict[str, Any], market_context: Dict[str, Any] = {}) -> Dict[str, float]:
+        bull = float(score)
+        bear = float(100.0 - score)
+        side = 0.0
+
+        
+        if regime['regime'] == 'SIDEWAYS':
+            side = 50
+            bull *= 0.5
+            bear *= 0.5
+        elif regime['regime'] == 'VOLATILE':
+            side = 20
+            bull *= 0.8
+            bear *= 0.8
+            
+        if mtf.get('aligned'):
+            if mtf.get('weekly_trend') == 'BULLISH':
+                bull += 15.0; bear -= 15.0
+            elif mtf.get('weekly_trend') == 'BEARISH':
+                bear += 15.0; bull -= 15.0
+
+                
+        # V4: Market Context adjustments
+        if market_context.get('trend') == 'BULLISH':
+            bull += 10; bear -= 10
+        elif market_context.get('trend') == 'BEARISH':
+            bear += 15; bull -= 10
+                
+        bull = float(max(5.0, min(95.0, bull)))
+        bear = float(max(5.0, min(95.0, bear)))
+        side = float(max(5.0, min(95.0, side)))
+        total = float(bull + bear + side)
+
+        
+        return {
+            "bullish": float(round(float(bull / total) * 100.0, 1)),
+            "sideways": float(round(float(side / total) * 100.0, 1)),
+            "bearish": float(round(float(bear / total) * 100.0, 1))
+        }
+
+
+    @staticmethod
+    def generate_playbook(trade: Dict, trend_phase: str, overextended: Dict) -> Dict[str, Any]:
+        if trade.get('direction') == 'WAIT':
+            return {"plan": ["Wait for market structure to form."], "invalidation": "N/A"}
+        
+        direction = trade.get('direction')
+        entry = trade.get('entry', 0)
+        targets = trade.get('targets', [0, 0])
+        sl = trade.get('stop_loss', 0)
+        pullback = trade.get('pullback_entry')
+        
+        steps = []
+        is_ox = overextended.get('overextended', False)
+        
+        if is_ox:
+            steps.append(f"⏳ Overextended {overextended.get('detail')} — DO NOT CHASE.")
+            opt = pullback or (entry * 0.98 if direction == 'LONG' else entry * 1.02)
+            steps.append(f"🟢 Best Entry: Pullback to ~{opt:.2f}")
+        else:
+            if pullback and 'BREAKOUT' in trend_phase:
+                steps.append(f"💥 Breakout active. Aggressive entry: {entry:.2f}.")
+                steps.append(f"🟢 Best Entry: Retest of {pullback:.2f}")
+            elif 'EXPANSION' in trend_phase:
+                steps.append(f"🚀 Momentum expansion. Market entry {entry:.2f} acceptable.")
+            else:
+                steps.append(f"🟢 Accumulate near {entry:.2f}.")
+                
+        t1 = targets[0] if len(targets) > 0 else 0
+        t2 = targets[1] if len(targets) > 1 else t1
+        if t1 > 0:
+            steps.append(f"🎯 Targets: {t1:.2f} → {t2:.2f}")
+        
+        inv = f"Close below {sl:.2f} with volume" if direction == 'LONG' else f"Close above {sl:.2f} with volume"
+        steps.append(f"🛑 Invalidation: {inv}")
+        
+        return {"plan": steps, "invalidation": inv}
+
     @classmethod
-    def generate_signals(cls, df: pd.DataFrame, weekly_df: pd.DataFrame = None) -> Dict[str, Any]:
+    def calculate_ev(cls, probs: Dict[str, float], trade: Dict[str, Any]) -> Dict[str, Any]:
+        """EV Engine: (WinRate * AvgWin) - (LossRate * AvgLoss)"""
+        if trade.get('direction') == 'WAIT' or not trade.get('targets') or not trade.get('stop_loss'):
+            return {"ev": 0.0, "is_positive": False}
+            
+        entry = float(trade.get('entry', 0))
+        target = float(trade.get('targets')[0])
+        stop = float(trade.get('stop_loss', 0))
+        
+        if entry == 0: return {"ev": 0.0, "is_positive": False}
+        
+        win_amt = abs(target - entry)
+        loss_amt = abs(entry - stop)
+        
+        bull_prob = float(probs.get('bullish', 50)) / 100.0
+        bear_prob = float(probs.get('bearish', 50)) / 100.0
+        
+        if trade.get('direction') == 'LONG':
+            win_rate = bull_prob
+            loss_rate = bear_prob
+        else:
+            win_rate = bear_prob
+            loss_rate = bull_prob
+            
+        # Strict formula implementation
+        ev_dollar = (win_rate * win_amt) - (loss_rate * loss_amt)
+        ev_r = float(round(float(ev_dollar / loss_amt), 2)) if loss_amt > 0 else 0.0
+        
+        return {"ev": ev_r, "is_positive": bool(ev_dollar > 0)}
+
+
+
+    @staticmethod
+    def calculate_position_size(trade: Dict[str, Any], capital: float = 100000.0, risk_pct: float = 0.01) -> Dict[str, Any]:
+
+        """Calculates exact shares based on fixed fractional risk."""
+        if trade.get('direction') == 'WAIT' or not trade.get('stop_loss'):
+            return {"shares": 0, "value": 0, "risk_amount": 0}
+            
+        entry = float(trade.get('entry', 0))
+        stop = float(trade.get('stop_loss', 0))
+        
+        risk_per_share = abs(entry - stop)
+        if risk_per_share == 0: return {"shares": 0, "value": 0, "risk_amount": 0}
+        
+        max_risk_amount = capital * risk_pct
+        shares = int(max_risk_amount // risk_per_share)
+        
+        return {
+            "shares": int(shares),
+            "capital_required": float(round(float(shares * entry), 2)),
+            "risk_amount": float(round(float(shares * risk_per_share), 2)),
+            "capital_pct": float(round(float(((shares * entry) / capital) * 100.0), 1))
+        }
+
+
+    @classmethod
+    def _get_tier_info(cls, score: float) -> Dict[str, Any]:
+        """Map score to conviction tier details."""
+        for tier in cls.CONVICTION_TIERS:
+            # Ensure comparison is between floats to satisfy type checkers
+            min_val = float(tier["min"])
+            max_val = float(tier["max"])
+            if min_val <= float(score) <= max_val:
+                return tier
+        return cls.CONVICTION_TIERS[-1]  # Default to VERY LOW
+
+    @staticmethod
+    def _generate_verdict(ticker: str, recommendation: str, score: float, trade: Dict, conviction_label: str) -> str:
+        """Panvi v1.2 — Deterministic Verdict Generator (v4 - Institutional)."""
+        # Strip suffix for display consistency
+        display_ticker = ticker.split(".")[0]
+        currency_sim = IndicatorService._get_currency_symbol(ticker)
+        
+        status = "STABILITY (HOLD)" if recommendation == "WAIT" else f"POTENTIAL {'EXPANSION' if score > 50 else 'CONTRACTION'}"
+
+        if recommendation == "WAIT" or score < 65:
+             reason = "market structure weak" if conviction_label == "LOW" else "insufficient conviction"
+             return f"Truth Machine: {display_ticker} remains in {status}. Signal blocked due to {reason}."
+        
+        entry = trade.get('entry', 0)
+        stop = trade.get('stop_loss', 0)
+        return f"Truth Machine confirms {status} for {display_ticker} with {conviction_label} conviction. Entry near {currency_sim}{entry}, exit strictly if below {currency_sim}{stop}."
+
+    @classmethod
+    def generate_signals(cls, ticker: str, df: pd.DataFrame, weekly_df: pd.DataFrame = None, market_context: Dict[str, Any] = {}, strategy_stats: List[Dict[str, Any]] = []) -> Dict[str, Any]:
+
         """Generate the full pro trading analysis."""
+        if market_context is None: market_context = {}
         empty_result = {
             "recommendation": "HOLD", "signals": [], "rsi": 0, "last_price": 0,
             "composite_score": 50, "breakdown": {}, "price_change_pct": 0,
@@ -805,6 +1230,7 @@ class IndicatorService:
             "breakout": {"status": "NONE"}, "trap": {"trap": False}, "volume_intel": {},
             "momentum": {}, "sr_zones": {}, "trade": {"direction": "WAIT", "rr_value": 0},
             "mtf": {}, "signal_quality": {"tier": "C"}, "risk_warnings": [],
+            "trend_phase": "UNKNOWN", "liquidity": {}, "playbook": {}, "probabilities": {},
         }
         if df.empty or 'RSI' not in df.columns or len(df) < 5:
             return empty_result
@@ -836,10 +1262,38 @@ class IndicatorService:
         # 6. Multi-timeframe
         mtf = cls.weekly_confirmation(weekly_df) if weekly_df is not None else {"weekly_trend": "unknown", "aligned": False, "boost": 0}
 
-        # 7. Score each indicator with regime awareness
+        # 7. Layered Intelligence System
         regime_name = regime['regime']
         weights = cls.REGIME_WEIGHTS.get(regime_name, cls.REGIME_WEIGHTS['SIDEWAYS'])
+        struct_score = cls.calculate_structure_score(df, sr_zones, regime_name)
+        
+        # v1.2 Layer Evidence
+        currency_sim = cls._get_currency_symbol(ticker)
+        close = float(last['Close'])
+        sma20 = float(last.get('SMA_20', close))
+        support_val = sr_zones['support'][0]['price'] if sr_zones['support'] else close * 0.98
+        dist_to_support = ((close - support_val) / support_val * 100)
+        
+        l1_evidence = [
+            f"Price is {currency_sim}{close:.2f}, nearest support at {currency_sim}{support_val:.2f} (Dist: {dist_to_support:.1f}%)",
+            f"Price vs 20-day average: {'Above' if close > sma20 else 'Below'} by {abs(close-sma20)/sma20*100:.1f}%",
+            f"Market Regime: {regime_name} ({regime.get('detail', '')})"
+        ]
 
+        rsi = float(last.get('RSI', 50))
+        macd_hist = float(last.get('MACD_Diff', 0))
+        vol_ratio = float(last.get('Volume', 0) / (last.get('Vol_Avg_20', 1) or 1))
+        l2_status = "High (Overbought)" if rsi > 70 else "Low (Oversold)" if rsi < 30 else "Normal"
+        l2_evidence = [
+            f"RSI = {rsi:.1f}. {l2_status} range.",
+            f"MACD Momentum: {'Strengthening' if macd_hist > 0 else 'Weakening'} (Diff: {macd_hist:.3f})",
+            f"Volume Intensity: {vol_ratio:.1f}x average. {'Institutional involvement' if vol_ratio > 1.5 else 'Normal retail volume'}."
+        ]
+        
+        # Timestamps
+        now_ts = datetime.datetime.now().isoformat()
+
+        
         scores = {}
         scores['rsi'] = cls._score_rsi(last.get('RSI', 50), regime_name)
         scores['macd'] = cls._score_macd(last.get('MACD', 0), last.get('MACD_Signal', 0), prev.get('MACD', 0), prev.get('MACD_Signal', 0))
@@ -850,9 +1304,17 @@ class IndicatorService:
         scores['stochastic'] = cls._score_stochastic(last.get('Stoch_K', 50), last.get('Stoch_D', 50), prev.get('Stoch_K', 50), prev.get('Stoch_D', 50), regime_name)
         scores['breakout'] = cls._score_breakout(breakout)
         scores['trend_200'] = cls._score_trend_200(last['Close'], last.get('SMA_200', 0))
+        
+        # Layer 2: Indicators (Normalized)
+        ind_score = cls.calculate_indicator_score(scores, weights)
 
-        # 8. Compute weighted composite
-        composite = sum(scores[k] * weights.get(k, 0.1) for k in scores)
+        # Layer 3: AI/Probabilistic Proxy (Technical Probability)
+        # In a full flow, this would be updated by AIService fusion
+        tech_probs = cls.calculate_probabilities(ind_score, regime, mtf, market_context)
+        ai_prob_proxy = tech_probs.get('bullish', 50) / 100.0
+
+        # Unified signal fusion
+        composite = cls.calculate_panvi_fusion(ai_prob_proxy, ind_score, struct_score)
 
         # Apply MTF boost/penalty
         composite += mtf.get('boost', 0)
@@ -881,32 +1343,27 @@ class IndicatorService:
         if abs(rsi_slope) > 3: signals.append(f"RSI {'surging' if rsi_slope > 0 else 'collapsing'} (slope={rsi_slope})")
         if not signals: signals.append("No strong directional signals")
 
-        # 10. Recommendation (initial)
-        if composite >= 80: recommendation = "STRONG BUY"
-        elif composite >= 65: recommendation = "BUY"
-        elif composite >= 45: recommendation = "HOLD"
-        elif composite >= 30: recommendation = "SELL"
-        else: recommendation = "STRONG SELL"
+        # 9. Directional Engine: > 65 EXPECT UP, < 35 EXPECT DOWN, Else WAIT
+        if composite > 65: recommendation = "EXPECT UP"
+        elif composite < 35: recommendation = "EXPECT DOWN"
+        else: recommendation = "WAIT"
 
-        # 11. Trade structure (pass breakout for pullback entry)
-        trade = cls.generate_trade_structure(df, sr_zones, recommendation, breakout)
 
-        # 11b. R:R FILTER — downgrade if risk:reward is bad
-        rr_val = trade.get('rr_value', 0)
-        if recommendation in ('BUY', 'STRONG BUY') and rr_val < 1.5 and trade.get('direction') == 'LONG':
-            recommendation = 'HOLD'
-            trade['note'] = f'Signal was BUY but R:R ({rr_val}) < 1.5 — wait for better entry'
-        elif recommendation in ('SELL', 'STRONG SELL') and rr_val < 1.5 and trade.get('direction') == 'SHORT':
-            recommendation = 'HOLD'
-            trade['note'] = f'Signal was SELL but R:R ({rr_val}) < 1.5 — wait for better entry'
 
-        # 12. Signal quality (now includes R:R)
+
+        # 11. V4 Deep Engines Setup
+        overextended = cls.detect_overextension(df)
+        
+        # 12. Trade structure (pass breakout for pullback entry)
+        trade = cls.generate_trade_structure(df, sr_zones, recommendation, breakout, overextended)
+
+        # 12. Signal quality (initial)
         signal_quality = cls.get_signal_quality(composite, breakout, vol_intel, regime, mtf, trade)
 
         # 13. ALWAYS-ON RISK WARNINGS — there is ALWAYS risk
         risk_warnings = []
-        if rr_val < 1.5 and trade.get('direction') != 'WAIT':
-            risk_warnings.append(f"Low R:R ({rr_val}) — not an ideal entry point")
+        if trade.get('rr_value', 0) < 1.5 and trade.get('direction') != 'WAIT':
+            risk_warnings.append(f"Low R:R ({trade.get('rr_value', 0)}) — not an ideal entry point")
         if trap.get('trap'):
             risk_warnings.append(trap['detail'])
         if vol_intel.get('divergence') == 'BEARISH':
@@ -933,10 +1390,146 @@ class IndicatorService:
         if not risk_warnings:
             risk_warnings.append("Standard market risk applies — always use stop loss")
 
+        # 14. Additional Engine Mapping
+        trend_phase = cls.detect_trend_phase(regime, breakout, momentum, vol_intel)
+        liquidity = cls.map_liquidity(df)
+        probabilities = cls.calculate_probabilities(composite, regime, mtf, market_context)
+        playbook = cls.generate_playbook(trade, trend_phase, overextended)
+
+        # 15. V5 Quant Edge Engines
+        # Calculate potential risk BEFORE filters block the trade
+        # If the trade is WAIT/Neutral, we construct a 'Shadow Trade' for the safety metric
+        shadow_trade = trade.copy()
+        if shadow_trade.get('direction') == 'WAIT':
+            potential_dir = "BUY" if composite >= 50 else "SELL"
+            shadow_trade = cls.generate_trade_structure(df, sr_zones, potential_dir, breakout, overextended)
+
+        
+        potential_pos = cls.calculate_position_size(shadow_trade)
+        ev_data = cls.calculate_ev(probabilities, trade)
+        position_size = potential_pos # Default for dashboard
+
+        
+        # 16. V5 STRICT TRADE FILTER & SEQUENTIAL CONFIRMATION
+
+        rr_val = trade.get('rr_value', 0)
+        
+        # Strategy classification for Regime blocks
+        is_mean_reversion = rsi_val < 35 or rsi_val > 65
+        is_breakout_strat = breakout.get('status') in ['CONFIRMED', 'ATTEMPT']
+        strategy_type = "MEAN_REVERSION" if is_mean_reversion else "BREAKOUT" if is_breakout_strat else "TREND_CONT"
+        
+        ta_direction = trade.get('direction')
+        
+        # V6 Regime-Strategy Mismatch Engine
+        if regime_name == "SIDEWAYS" and strategy_type == "TREND_CONT":
+            recommendation = "HOLD"
+            trade['note'] = f"V6 REGIME FILTER: Strategy ({strategy_type}) underperforms violently in SIDEWAYS regime. Trade blocked."
+            signal_quality = {"tier": "D", "label": "REGIME BLOCKED", "color": "#FF6B6B"}
+            trade['direction'] = "WAIT"
+            risk_warnings.append(trade['note'])
+        # Sequential block: chop + flat volume = NO TRADE
+        elif regime_name == "CHOPPY" and vol_intel.get('trend') == 'flat':
+            recommendation = "HOLD"
+            trade['note'] = "V5 FILTER: Choppy market with no volume — DO NOT TRADE."
+            signal_quality = {"tier": "D", "label": "AVOID MARKET", "color": "#FF6B6B"}
+            trade['direction'] = "WAIT"
+            risk_warnings.append(trade['note'])
+        # V5 Absolute Filter (Negative EV or bad R:R)
+        # Relaxed: Only block if EV is significantly negative (< -0.1R)
+        elif trade.get('direction') != 'WAIT' and (float(ev_data.get('ev', 0)) < -0.1 or rr_val < 1.3):
+            recommendation = "HOLD"
+            trade['note'] = f"V5 FILTER: Bad math (EV={ev_data['ev']}, R:R={rr_val}). Trade physically blocked."
+            signal_quality = {"tier": "D", "label": "BLOCKED", "color": "#FF6B6B"}
+            trade['direction'] = "WAIT"
+            risk_warnings.append(trade['note'])
+
+        # V7 Self-Learning Loop Block (Real World Stats)
+        if strategy_stats and trade.get('direction') != 'WAIT':
+            # Extract PF for this specific strategy type
+            strat_info = next((s for s in strategy_stats if s['strategy'] == strategy_type), None)
+            if strat_info:
+                real_pf = strat_info.get('profit_factor', 1.0)
+                real_wr = strat_info.get('win_rate', 0.0)
+                total_t = strat_info.get('total_trades', 0)
+                
+                # Relaxed: Only block if PF is catastrophically low (< 0.7)
+                if total_t >= 10 and real_pf < 0.7:
+                    recommendation = "HOLD"
+                    trade['note'] = f"V7 SELF-LEARNING BLOCK: Strategy '{strategy_type}' is UNPROFITABLE in real-world tracking (PF {real_pf}). Execution halted."
+                    signal_quality = {"tier": "D", "label": "UNPROFITABLE", "color": "#FF6B6B"}
+                    trade['direction'] = "WAIT"
+                    risk_warnings.append(trade['note'])
+
+                elif total_t >= 10:
+                    # Dynamic Confidence Scaling
+                    if real_pf > 1.5:
+                        composite = min(100, composite * 1.1)
+                    elif real_pf < 1.2:
+                        composite *= 0.9
+                    composite = round(composite, 1)
+
+        # Merge new warnings into risk warnings
+        if overextended.get('overextended'):
+            risk_warnings.append(overextended['detail'])
+        if liquidity.get('detected'):
+            for pool in liquidity['pools']:
+                risk_warnings.append(pool)
+
+        # Base: 70. Normalized by how 'bad' the EV was.
+        safety_score = float(70.0 + (abs(float(min(0.0, float(ev_data['ev'])))) * 15.0))
+        if recommendation == "HOLD" and ta_direction != "WAIT":
+            safety_score += 10.0
+        safety_score = float(min(99.0, float(round(float(safety_score)))))
+        
+        cap_saved = float(position_size.get('risk_amount', 0.0))
+
+        
+        # Phase 3: Production Safety Guards
+        nifty_change = market_context.get('nifty_daily_change', 0.0)
+        market_regime_alert = None
+        if nifty_change < -2.5:
+            market_regime_alert = f"HIGH VOLATILITY ({nifty_change}%): Signals unreliable. Avoid new entries."
+
+        near_earnings = cls._check_earnings_proximity(ticker)
+        if near_earnings:
+            composite = min(composite, 60.0)
+            risk_warnings.append("Earnings risk: Within 5-day window. Conviction capped.")
+
+        # V3 Production Tier Alignment
+        tier_info = cls()._get_tier_info(composite)
+        conviction_label = tier_info["label"]
+
+        # Phase 4 Regime Refinement
+        if rsi_val < 35:
+            regime_name = "OVERSOLD"
+            regime["detail"] = f"RSI {rsi_val:.0f} (Potential Bounce Window)"
+        elif breakout.get('status') == 'CONFIRMED':
+            regime_name = "BREAKOUT"
+            regime["detail"] = f"Price clearing {breakout.get('type', 'level')}"
+        
+        # Standardize regime name and detail
+        regime["regime"] = regime_name
+        
         return {
+            "bias": recommendation,
             "recommendation": recommendation,
+            "currency_symbol": currency_sim,
+            "verdict": cls._generate_verdict(ticker, recommendation, composite, trade, conviction_label),
+            "market_regime_alert": market_regime_alert,
+            "algorithm_version": cls.ALGORITHM_VERSION,
             "composite_score": composite,
+            "struct_score": struct_score,
+            "ind_score": ind_score,
+            "ai_score": round(ai_prob_proxy * 100, 1),
             "signals": signals,
+            "l1_evidence": l1_evidence,
+            "l2_evidence": l2_evidence,
+            "l1_generated_at": now_ts,
+            "l2_generated_at": now_ts,
+            "algorithm_version": "PANVI_1.2",
+
+
             "rsi": rsi_val,
             "last_price": round(float(last['Close']), 2),
             "breakdown": {k: round(v, 1) for k, v in scores.items()},
@@ -951,4 +1544,14 @@ class IndicatorService:
             "mtf": mtf,
             "signal_quality": signal_quality,
             "risk_warnings": risk_warnings,
+            "trend_phase": trend_phase,
+            "liquidity": liquidity,
+            "probabilities": probabilities,
+            "playbook": playbook,
+            "expected_value": ev_data,
+            "position_size": position_size,
+            "capital_safety_score": float(safety_score),
+            "capital_saved_formatted": f"₹{cap_saved:,.0f}" if cap_saved > 0 else f"{float(abs(float(ev_data['ev'])) + 1.25):.2f}R"
+
+
         }
