@@ -17,6 +17,9 @@ import asyncio
 from services.stock_service import StockService
 from services.indicator_service import IndicatorService
 from services.ai_service import AIService
+from services.feedback_service import FeedbackService
+from services.backtest_service import BacktestService
+from services.trade_tracker_service import TradeTrackerService
 
 app = FastAPI(title="AI Global Stock Predictor API")
 
@@ -29,6 +32,76 @@ app.add_middleware(
 )
 
 ai_service = AIService()
+
+
+async def _build_analysis_payload(ticker: str) -> Dict[str, Any]:
+    """Build a frontend-friendly analysis payload for one ticker."""
+    df = StockService.get_stock_data(ticker)
+    if df.empty:
+        raise HTTPException(status_code=404, detail="Stock not found or no data")
+
+    try:
+        weekly_df = StockService.get_weekly_data(ticker)
+    except Exception:
+        weekly_df = None
+
+    market_context = StockService.get_market_context()
+    portfolio = TradeTrackerService.get_portfolio()
+    strategy_stats = portfolio.get('strategy_stats', []) if isinstance(portfolio, dict) else []
+
+    df_with_indicators = IndicatorService.calculate_indicators(df)
+    ta_summary = IndicatorService.generate_signals(
+        ticker,
+        df_with_indicators,
+        weekly_df,
+        market_context,
+        strategy_stats=strategy_stats
+    )
+    ai_prediction = await ai_service.predict_stock_outcome(ticker, ta_summary)
+
+    confidence_map = {"LOW": 0.35, "MEDIUM": 0.6, "HIGH": 0.8, "EXTREME": 0.95}
+    conviction = ai_prediction.get("conviction", "LOW")
+
+    risk_warnings = ta_summary.get("risk_warnings", [])
+    risk_level = "MEDIUM"
+    if len(risk_warnings) >= 5:
+        risk_level = "HIGH"
+    elif len(risk_warnings) <= 1:
+        risk_level = "LOW"
+
+    return {
+        "ticker": ticker,
+        "price": ta_summary.get("last_price", 0),
+        "currency_symbol": ta_summary.get("currency_symbol", "$"),
+        "recommendation": ta_summary.get("recommendation", "WAIT"),
+        "verdict": ai_prediction.get("prediction", "Stability (Hold)"),
+        "final_score": ai_prediction.get("final_score", ta_summary.get("composite_score", 50)),
+        "confidence": round(confidence_map.get(conviction, 0.35), 2),
+        "conviction": conviction,
+        "probability": ai_prediction.get("probability", "50.0%"),
+        "regime": ta_summary.get("regime", {}),
+        "breakout": ta_summary.get("breakout", {}),
+        "trade": ta_summary.get("trade", {}),
+        "signals": ta_summary.get("signals", []),
+        "probabilities": ta_summary.get("probabilities", {}),
+        "risk": {
+            "level": risk_level,
+            "warnings": risk_warnings,
+            "capital_safety_score": ta_summary.get("capital_safety_score", 0),
+            "position_size": ta_summary.get("position_size", {}),
+            "expected_value": ta_summary.get("expected_value", {}),
+        },
+        "ai": {
+            "sentiment": ai_prediction.get("ai_sentiment", "Neutral"),
+            "insight": ai_prediction.get("ai_insight", ""),
+            "confidence": ai_prediction.get("ai_confidence", "Low"),
+            "key_risk": ai_prediction.get("key_risk", ""),
+            "sources": ai_prediction.get("sources", []),
+            "invalidation": ai_prediction.get("invalidation", ""),
+        },
+        "ta_summary": ta_summary,
+        "ai_prediction": ai_prediction,
+    }
 
 # Predefined Global Tickers for Scanner
 GLOBAL_TICKERS = [
@@ -82,25 +155,28 @@ def health():
 @app.get("/stock/{ticker}")
 async def get_stock_prediction(ticker: str):
     try:
-        df = StockService.get_stock_data(ticker)
-        if df.empty:
-            raise HTTPException(status_code=404, detail="Stock not found or no data")
-
-        # Fetch weekly data for multi-timeframe
-        try:
-            weekly_df = StockService.get_weekly_data(ticker)
-        except:
-            weekly_df = None
-
-        df_with_indicators = IndicatorService.calculate_indicators(df)
-        ta_summary = IndicatorService.generate_signals(df_with_indicators, weekly_df)
-        prediction = await ai_service.predict_stock_outcome(ticker, ta_summary)
+        payload = await _build_analysis_payload(ticker)
+        ta_summary = payload["ta_summary"]
         
+        # Log prediction for legacy systems
+        FeedbackService.log_prediction(ticker, ta_summary.get('last_price', 0), ta_summary)
+
         return {
             "ticker": ticker,
             "ta_summary": ta_summary,
-            "ai_prediction": prediction
+            "ai_prediction": payload["ai_prediction"]
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analysis/{ticker}")
+async def get_analysis(ticker: str):
+    """Frontend-friendly analysis endpoint with normalized risk/confidence fields."""
+    try:
+        return await _build_analysis_payload(ticker)
     except HTTPException:
         raise
     except Exception as e:
@@ -110,17 +186,22 @@ async def get_stock_prediction(ticker: str):
 async def scan_global_markets():
     """Scan all predefined global tickers and return their signals."""
     
+    # Phase 24: Pre-fetch stats for efficient scanning
+    portfolio = TradeTrackerService.get_portfolio()
+    strategy_stats = portfolio.get('strategy_stats', [])
+
     async def process_ticker(ticker):
         try:
             df = StockService.get_stock_data(ticker)
             if not df.empty:
                 df_with_ind = IndicatorService.calculate_indicators(df)
-                ta_summary = IndicatorService.generate_signals(df_with_ind)
+                ta_summary = IndicatorService.generate_signals(ticker, df_with_ind, strategy_stats=strategy_stats)
                 regime = ta_summary.get('regime', {})
                 breakout = ta_summary.get('breakout', {})
                 quality = ta_summary.get('signal_quality', {})
                 momentum = ta_summary.get('momentum', {})
                 vol = ta_summary.get('volume_intel', {})
+                
                 return {
                     "ticker": ticker,
                     "recommendation": ta_summary.get('recommendation', 'HOLD'),
@@ -130,14 +211,18 @@ async def scan_global_markets():
                     "price_change_pct": ta_summary.get('price_change_pct', 0),
                     "signals": ta_summary.get('signals', []),
                     "regime": regime.get('regime', 'SIDEWAYS'),
+                    "capital_safety_score": ta_summary.get('capital_safety_score', 0.0),
+                    "capital_saved_formatted": ta_summary.get('capital_saved_formatted', '0.00R'),
+                    "final_score": ta_summary.get('composite_score', 50),
+
                     "breakout_status": breakout.get('status', 'NONE'),
                     "signal_tier": quality.get('tier', 'C'),
                     "signal_label": quality.get('label', ''),
                     "momentum_accel": momentum.get('acceleration', 'STEADY'),
                     "smart_money": vol.get('smart_money'),
                 }
-        except:
-            pass
+        except Exception as e:
+            print(f"Error processing {ticker} in /scan: {e}")
         return None
 
     tasks = [process_ticker(ticker) for ticker in GLOBAL_TICKERS]
@@ -146,6 +231,70 @@ async def scan_global_markets():
     valid = [r for r in results if r]
     valid.sort(key=lambda x: x.get('composite_score', 50), reverse=True)
     return valid
+
+@app.post("/trade/create")
+async def create_trade(trade_data: Dict[str, Any]):
+    """Phase 24: Execute a physical trade and track capital allocation."""
+    res = TradeTrackerService.create_physical_trade(
+        ticker=trade_data.get('ticker'),
+        strategy=trade_data.get('strategy'),
+        entry=trade_data.get('entry'),
+        stop=trade_data.get('stop_loss'),
+        target=trade_data.get('target')
+    )
+    if not res:
+        raise HTTPException(status_code=400, detail="Invalid trade parameters or insufficient capital/risk")
+    return res
+
+@app.post("/update_trades")
+def trigger_trade_tracker():
+    """Scans and updates PENDING sqlite trades based on live outcome price action."""
+    # Run legacy reconciler for predictions table
+    TradeTrackerService.reconcile_pending_trades()
+    # Run institutional settlement for trades table
+    return TradeTrackerService.settle_physical_trades()
+
+@app.get("/portfolio")
+def get_portfolio():
+    """Returns structured SQLite trades and live price-mark-to-market."""
+    return TradeTrackerService.get_portfolio()
+
+
+@app.get("/backtest/{ticker}")
+def get_backtest(ticker: str):
+    """Run historical strategy backtest for a ticker."""
+    result = BacktestService.run_backtest(ticker)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/performance")
+def get_performance():
+    """Portfolio-level performance summary for dashboard KPI cards."""
+    portfolio = TradeTrackerService.get_portfolio()
+    if not isinstance(portfolio, dict) or portfolio.get("error"):
+        raise HTTPException(status_code=500, detail=portfolio.get("error", "Unable to load portfolio"))
+
+    summary = portfolio.get("summary", {})
+    strategy_stats = portfolio.get("strategy_stats", [])
+    closed = portfolio.get("closed_trades", [])
+
+    best_strategy = None
+    if strategy_stats:
+        best_strategy = max(strategy_stats, key=lambda s: float(s.get("win_rate", 0)))
+
+    return {
+        "summary": {
+            "total_equity_r": summary.get("total_equity_r", 0),
+            "active_risk_r": summary.get("active_risk_r", 0),
+            "win_rate": summary.get("win_rate", 0),
+            "closed_trades": len(closed),
+            "active_trades": len(portfolio.get("active_trades", [])),
+        },
+        "best_strategy": best_strategy,
+        "strategy_stats": strategy_stats,
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
