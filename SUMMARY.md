@@ -36,3 +36,28 @@ A premium mobile application designed for real-time market monitoring.
 
 ---
 **This project is now ready for your personal use and further refinement!**
+
+## 4. v1.0.0 Release Update (2026-04-06)
+
+This release establishes a usable v1 end-to-end flow for stock risk and prediction across API and dashboard.
+
+### Backend API Enhancements
+* Added/updated analysis flow to expose frontend-ready payloads.
+* Added `GET /backtest/{ticker}` for historical strategy simulation and confidence output.
+* Added `GET /performance` for aggregated prediction/trade performance reporting.
+
+### Backtesting Reliability Fixes
+* Corrected signal invocation flow in `backtest_service`.
+* Fixed confidence calculation order to avoid runtime/data-quality issues.
+
+### Frontend Dashboard Upgrade
+* Introduced `frontend/DashboardApp.js` with a modern dashboard-focused layout.
+* Updated app entrypoint in `frontend/index.js` to use the new dashboard flow.
+* Added web compatibility dependencies (`react-dom`, `react-native-web`) in `frontend/package.json`.
+
+### Validation Snapshot
+* Backend compile and API checks executed successfully.
+* Backend tests passed (with deprecation warnings only).
+* Frontend web export/build flow succeeded after dependency updates.
+
+This marks `v1.0.0` as the stable baseline for future `v1.1` iterations.
