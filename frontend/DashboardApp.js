@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -13,7 +14,19 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import axios from 'axios';
 
-const API_URL = 'http://192.168.1.18:8000';
+const DEFAULT_API_BY_PLATFORM = {
+  web: 'http://localhost:8000',
+  ios: 'http://localhost:8000',
+  android: 'http://10.0.2.2:8000',
+};
+
+const API_URL = (
+  process.env.EXPO_PUBLIC_API_URL ||
+  DEFAULT_API_BY_PLATFORM[Platform.OS] ||
+  'http://localhost:8000'
+).replace(/\/$/, '');
+
+const apiPath = (path) => `${API_URL}${path.startsWith('/') ? path : `/${path}`}`;
 
 const palette = {
   bg: '#090D16',
@@ -152,7 +165,7 @@ export default function DashboardApp() {
 
   const fetchPerformance = async () => {
     try {
-      const res = await axios.get(`${API_URL}/performance`, { timeout: 20000 });
+      const res = await axios.get(apiPath('/performance'), { timeout: 20000 });
       setPerformance(res.data || null);
     } catch {
       setPerformance(null);
@@ -162,12 +175,12 @@ export default function DashboardApp() {
   const fetchScan = async () => {
     setScanLoading(true);
     try {
-      const res = await axios.get(`${API_URL}/scan`, { timeout: 120000 });
+      const res = await axios.get(apiPath('/scan'), { timeout: 120000 });
       const rows = Array.isArray(res.data) ? res.data.slice(0, 40) : [];
       setScanData(rows);
     } catch {
       setScanData([]);
-      setError('Could not fetch scanner data. Check backend host/IP.');
+      setError(`Could not fetch scanner data. Check backend host at ${API_URL}.`);
     } finally {
       setScanLoading(false);
     }
@@ -182,7 +195,7 @@ export default function DashboardApp() {
     setError('');
 
     try {
-      const res = await axios.get(`${API_URL}/analysis/${symbol}`, { timeout: 60000 });
+      const res = await axios.get(apiPath(`/analysis/${symbol}`), { timeout: 60000 });
       setSelected(res.data);
     } catch (e) {
       const msg = e?.response?.data?.detail || 'Analysis failed. Verify ticker and backend status.';
@@ -226,6 +239,7 @@ export default function DashboardApp() {
         </View>
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        <Text style={styles.endpointText}>Backend: {API_URL}</Text>
 
         <View style={styles.kpiGrid}>
           <KpiCard label="Win Rate" value={`${fmtNum(summary.win_rate, '0.00')}%`} color={palette.up} />
@@ -341,6 +355,11 @@ const styles = StyleSheet.create({
   errorText: {
     color: palette.down,
     marginBottom: 10,
+  },
+  endpointText: {
+    color: palette.muted,
+    marginBottom: 10,
+    fontSize: 11,
   },
   kpiGrid: {
     flexDirection: 'row',
